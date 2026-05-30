@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
 import { ReviewSidebar } from './review/ReviewSidebar'
 import { Input } from './ui/input'
 import { Tabs } from './ui/tabs'
+import { submitReviewDecision } from '../api/review'
 import type {
   AuditEntry,
   DecisionAction,
@@ -14,6 +16,7 @@ import type {
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
+  fileHash: string
   items: TransactionFlag[]
   onReset: () => void
 }
@@ -26,7 +29,7 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalate' },
 ]
 
-export function ReviewQueue({ items, onReset }: ReviewQueueProps) {
+export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
@@ -34,6 +37,12 @@ export function ReviewQueue({ items, onReset }: ReviewQueueProps) {
   const [threshold, setThreshold] = useState(55)
   const [history, setHistory] = useState<DecisionAction[]>([])
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([])
+  const {
+    isError: reviewSyncFailed,
+    mutate: syncReviewDecision,
+  } = useMutation({
+    mutationFn: submitReviewDecision,
+  })
 
   const visibleTransactions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -81,36 +90,44 @@ export function ReviewQueue({ items, onReset }: ReviewQueueProps) {
       transactionId: string,
       nextDecision: Exclude<ReviewDecision, 'pending'>,
     ) => {
-      setTransactions((current) =>
-        current.map((transaction) => {
-          if (transaction.transactionId !== transactionId) {
-            return transaction
-          }
-
-          setHistory((previous) => [
-            {
-              transactionId,
-              previousDecision: transaction.decision,
-              nextDecision,
-            },
-            ...previous,
-          ])
-
-          setAuditLog((previous) => [
-            {
-              id: `${transactionId}-${Date.now()}`,
-              transactionId,
-              decision: nextDecision,
-              timestamp: new Date().toISOString(),
-            },
-            ...previous,
-          ])
-
-          return { ...transaction, decision: nextDecision }
-        }),
+      const transaction = transactions.find(
+        (item) => item.transactionId === transactionId,
       )
+
+      if (!transaction) {
+        return
+      }
+
+      const action = {
+        nextDecision,
+        previousDecision: transaction.decision,
+        transactionId,
+      }
+
+      setTransactions((current) =>
+        current.map((item) =>
+          item.transactionId === transactionId
+            ? { ...item, decision: nextDecision }
+            : item,
+        ),
+      )
+      setHistory((previous) => [action, ...previous])
+      setAuditLog((previous) => [
+        {
+          id: `${transactionId}-${Date.now()}`,
+          transactionId,
+          decision: nextDecision,
+          timestamp: new Date().toISOString(),
+        },
+        ...previous,
+      ])
+      syncReviewDecision({
+        decision: nextDecision,
+        fileHash,
+        transactionId,
+      })
     },
-    [],
+    [fileHash, syncReviewDecision, transactions],
   )
 
   const undo = useCallback(() => {
@@ -218,7 +235,7 @@ export function ReviewQueue({ items, onReset }: ReviewQueueProps) {
             <h1>Flagged Transactions</h1>
             <p>
               {queueStats.pending} pending of {transactions.length} flagged ·{' '}
-              Uploaded CSV
+              Uploaded CSV {reviewSyncFailed ? '· Last review sync failed' : ''}
             </p>
           </div>
           <div className="topbar-actions">

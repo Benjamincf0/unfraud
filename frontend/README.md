@@ -9,6 +9,7 @@ npm install
 npm run dev
 ```
 
+The Vite dev server proxies `/api` to `http://127.0.0.1:8000` by default.
 Set `VITE_API_BASE_URL` when the backend runs on a different origin:
 
 ```bash
@@ -20,7 +21,7 @@ VITE_API_BASE_URL=http://localhost:8000 npm run dev
 The app uploads the transaction file to:
 
 ```text
-POST /api/review/upload
+POST /upload
 ```
 
 Request body is multipart form data with a `file` field containing `transactions.csv`.
@@ -28,10 +29,23 @@ Request body is multipart form data with a `file` field containing `transactions
 Expected response shape:
 
 ```ts
-TransactionFlag[]
+{ file_hash: string; message: string }
 ```
 
-The frontend also accepts `{ items: TransactionFlag[] }`. See `src/types.ts` for the full transaction contract.
+Then it fetches backend analysis from:
+
+```text
+GET /analysis/all/{file_hash}
+```
+
+The backend returns fraud analysis keyed by `transaction_id`. The frontend parses
+the uploaded CSV locally and joins those rows with the analysis response so the
+review UI can show the original transaction fields, scores, and reasons. Review
+decisions are synced with:
+
+```text
+POST /review/{file_hash}/{transaction_id}/{action}
+```
 
 ## Reviewer controls
 
