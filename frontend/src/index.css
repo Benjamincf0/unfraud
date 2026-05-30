@@ -134,6 +134,7 @@ button:disabled {
 }
 
 .side-section label,
+.shortcut-section h2,
 .section-title-row h2,
 .card-header h2,
 .reasons-section h3,
@@ -169,6 +170,38 @@ button:disabled {
   min-height: 32px;
   color: #c7c7d1;
   font-size: 13px;
+}
+
+.shortcut-section {
+  margin-top: auto;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  color: #c7c7d1;
+  font-size: 13px;
+}
+
+.shortcut-row kbd {
+  min-width: 52px;
+  border: 1px solid #3b3b44;
+  border-radius: 6px;
+  background: #1c1c21;
+  color: #f0f0f0;
+  padding: 2px 6px;
+  font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
 }
 
 .workspace {
@@ -546,6 +579,10 @@ button:disabled {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid #2c2c33;
+  }
+
+  .shortcut-section {
+    margin-top: 0;
   }
 
   .review-layout {
