@@ -50,16 +50,19 @@ button:disabled {
 .app-shell {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
   background: #0e0e10;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  height: 100vh;
   border-right: 1px solid #2c2c33;
   background: #151518;
+  overflow: auto;
   padding: 24px 18px;
 }
 
@@ -206,6 +209,8 @@ button:disabled {
 
 .workspace {
   min-width: 0;
+  height: 100vh;
+  overflow: auto;
   padding: 24px;
 }
 
@@ -574,11 +579,21 @@ button:disabled {
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
   }
 
   .sidebar {
+    height: auto;
     border-right: 0;
     border-bottom: 1px solid #2c2c33;
+    overflow: visible;
+  }
+
+  .workspace {
+    height: auto;
+    overflow: visible;
   }
 
   .shortcut-section {
