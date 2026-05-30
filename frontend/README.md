@@ -47,6 +47,17 @@ decisions are synced with:
 POST /review/{file_hash}/{transaction_id}/{action}
 ```
 
+Uploaded result metadata is saved in `localStorage` by `file_hash`. On reload,
+the app restores the active result by fetching:
+
+```text
+GET /export/{file_hash}
+```
+
+The export endpoint provides the original transaction fields plus analysis
+columns, which lets the frontend rebuild the review queue without requiring the
+same CSV to be uploaded again.
+
 ## Reviewer controls
 
 - `j` or `ArrowDown`: next transaction

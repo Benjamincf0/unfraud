@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
-import { ReviewSidebar } from './review/ReviewSidebar'
+import { Button } from './ui/button'
 import { Input } from './ui/input'
+import { Slider } from './ui/slider'
 import { Tabs } from './ui/tabs'
 import { submitReviewDecision } from '../api/review'
+import type { ReviewSession } from '../lib/reviewSessions'
 import type {
-  AuditEntry,
   DecisionAction,
   ReviewDecision,
   TransactionFlag,
@@ -16,27 +17,45 @@ import type {
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
+  activeFileHash: string
   fileHash: string
   items: TransactionFlag[]
   onReset: () => void
+  onSelectSession: (fileHash: string) => void
+  sessions: ReviewSession[]
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'pending', label: 'Pending' },
   { value: 'all', label: 'All' },
-  { value: 'approved', label: 'Approve' },
-  { value: 'dismissed', label: 'Dismiss' },
-  { value: 'escalated', label: 'Escalate' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'dismissed', label: 'Dismissed' },
+  { value: 'escalated', label: 'Escalated' },
 ]
 
-export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
+const shortcutOptions = [
+  { keys: 'J / ↓', label: 'Next' },
+  { keys: 'K / ↑', label: 'Previous' },
+  { keys: 'A', label: 'Approve' },
+  { keys: 'D', label: 'Dismiss' },
+  { keys: 'E', label: 'Escalate' },
+  { keys: 'U', label: 'Undo' },
+]
+
+export function ReviewQueue({
+  activeFileHash,
+  fileHash,
+  items,
+  onReset,
+  onSelectSession,
+  sessions,
+}: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
   const [threshold, setThreshold] = useState(55)
   const [history, setHistory] = useState<DecisionAction[]>([])
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>([])
   const {
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
@@ -85,6 +104,13 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
     )
   }, [transactions])
 
+  useEffect(() => {
+    setTransactions(items)
+    setActiveId(items[0]?.transactionId ?? '')
+    setFilter('pending')
+    setHistory([])
+  }, [fileHash, items])
+
   const decide = useCallback(
     (
       transactionId: string,
@@ -112,15 +138,6 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
         ),
       )
       setHistory((previous) => [action, ...previous])
-      setAuditLog((previous) => [
-        {
-          id: `${transactionId}-${Date.now()}`,
-          transactionId,
-          decision: nextDecision,
-          timestamp: new Date().toISOString(),
-        },
-        ...previous,
-      ])
       syncReviewDecision({
         decision: nextDecision,
         fileHash,
@@ -145,7 +162,6 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
       ),
     )
     setHistory(rest)
-    setAuditLog((current) => current.slice(1))
     setActiveId(lastAction.transactionId)
   }, [history])
 
@@ -218,45 +234,79 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
   }, [activeTransaction, decide, moveActive, undo])
 
   return (
-    <div className="app-shell">
-      <ReviewSidebar
-        auditLog={auditLog}
-        historyCount={history.length}
-        onThresholdChange={setThreshold}
-        onUndo={undo}
-        shownCount={visibleTransactions.length}
-        stats={queueStats}
-        threshold={threshold}
-      />
-
+    <div className="app-shell review-shell">
       <main className="workspace">
         <header className="topbar">
-          <div>
-            <h1>Flagged Transactions</h1>
-            <p>
-              {queueStats.pending} pending of {transactions.length} flagged ·{' '}
-              Uploaded CSV {reviewSyncFailed ? '· Last review sync failed' : ''}
-            </p>
+          <div className="review-status" aria-label="Review status">
+            <strong>{queueStats.pending}</strong>
+            <span>pending</span>
+            <span>{visibleTransactions.length} shown</span>
+            <span>{transactions.length} flagged</span>
+            {reviewSyncFailed ? <span>Sync failed</span> : null}
           </div>
           <div className="topbar-actions">
+            {sessions.length > 1 ? (
+              <select
+                aria-label="Switch result set"
+                className="result-select"
+                onChange={(event) => onSelectSession(event.target.value)}
+                value={activeFileHash}
+              >
+                {sessions.map((session) => (
+                  <option key={session.fileHash} value={session.fileHash}>
+                    {session.label} · {session.fileHash.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <Input
               aria-label="Search transactions"
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search card, merchant, country"
+              placeholder="Search transaction"
               value={query}
             />
-            <button className="text-button" onClick={onReset} type="button">
-              Upload another CSV
-            </button>
+            <Button
+              disabled={history.length === 0}
+              onClick={undo}
+              size="sm"
+              variant="outline"
+            >
+              Undo
+            </Button>
+            <Button onClick={onReset} size="sm" variant="outline">
+              Upload CSV
+            </Button>
           </div>
         </header>
 
-        <Tabs
-          className="queue-tabs"
-          onValueChange={setFilter}
-          options={filterOptions}
-          value={filter}
-        />
+        <div className="review-controls">
+          <Tabs
+            className="queue-tabs"
+            onValueChange={setFilter}
+            options={filterOptions}
+            value={filter}
+          />
+          <label className="threshold-control" htmlFor="review-threshold">
+            <span>Threshold</span>
+            <Slider
+              id="review-threshold"
+              max={95}
+              min={20}
+              onChange={(event) => setThreshold(Number(event.target.value))}
+              value={threshold}
+            />
+            <strong>{threshold}%</strong>
+          </label>
+        </div>
+
+        <div className="shortcut-strip" aria-label="Keyboard shortcuts">
+          {shortcutOptions.map((shortcut) => (
+            <span className="shortcut-token" key={shortcut.label}>
+              <kbd>{shortcut.keys}</kbd>
+              <span>{shortcut.label}</span>
+            </span>
+          ))}
+        </div>
 
         <div className="review-layout">
           <QueueList
