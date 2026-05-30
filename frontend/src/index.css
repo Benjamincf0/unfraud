@@ -378,21 +378,23 @@ button:disabled {
   text-transform: capitalize;
 }
 
-.visualization-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.inline-link {
+  border: 0;
+  background: transparent;
+  color: #00ff9f;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
 }
 
-.visualization-slot {
-  display: grid;
-  min-height: 160px;
-  place-items: center;
-  border: 1px dashed #3b3b44;
-  border-radius: 8px;
-  background: #121215;
-  color: #777784;
-  font-size: 13px;
+.inline-link:hover {
+  color: #8dffd0;
+}
+
+.inline-link:focus-visible {
+  outline: 2px solid #00ff9f;
+  outline-offset: 2px;
 }
 
 .detail-grid {
@@ -447,6 +449,120 @@ button:disabled {
   font-size: 14px;
   font-weight: 700;
   text-align: right;
+}
+
+.card-analysis-prompt,
+.card-analysis-panel {
+  border-top: 1px solid #2c2c33;
+  padding-top: 14px;
+}
+
+.card-analysis-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.card-analysis-prompt strong,
+.card-analysis-header h3 {
+  margin: 0;
+  color: #f0f0f0;
+  font-size: 14px;
+}
+
+.card-analysis-header p,
+.analysis-state,
+.chart-legend {
+  margin: 0;
+  color: #a8a8b3;
+  font-size: 13px;
+}
+
+.card-analysis-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card-analysis-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.card-analysis-header strong {
+  color: #f0f0f0;
+  font-size: 18px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.card-history-chart {
+  border: 1px solid #2c2c33;
+  border-radius: 8px;
+  background: #121215;
+  padding: 12px;
+}
+
+.chart-bars {
+  display: grid;
+  grid-auto-columns: minmax(7px, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  align-items: end;
+  min-height: 180px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.chart-column {
+  display: flex;
+  align-items: end;
+  min-width: 7px;
+  height: 180px;
+}
+
+.chart-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-bottom: 1px solid #3b3b44;
+}
+
+.chart-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-height: 4px;
+  border-radius: 3px 3px 0 0;
+  background: #777784;
+}
+
+.chart-bar-current {
+  background: #00ff9f;
+}
+
+.chart-risk-marker {
+  position: absolute;
+  right: -1px;
+  left: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: #c7c7d1;
+}
+
+.chart-risk-marker-flagged {
+  background: #ff0080;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 10px;
 }
 
 .action-row {
@@ -696,8 +812,7 @@ button:disabled {
     width: 100%;
   }
 
-  .threshold-control,
-  .visualization-grid {
+  .threshold-control {
     grid-template-columns: 1fr;
   }
 

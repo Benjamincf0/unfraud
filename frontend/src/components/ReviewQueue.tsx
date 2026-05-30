@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Slider } from './ui/slider'
 import { Tabs } from './ui/tabs'
-import { submitReviewDecision } from '../api/review'
+import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
 import type { ReviewSession } from '../lib/reviewSessions'
 import type {
   DecisionAction,
@@ -56,11 +56,21 @@ export function ReviewQueue({
   const [query, setQuery] = useState('')
   const [threshold, setThreshold] = useState(55)
   const [history, setHistory] = useState<DecisionAction[]>([])
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
   const {
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
   } = useMutation({
     mutationFn: submitReviewDecision,
+  })
+  const selectedCardAnalysisQuery = useQuery({
+    enabled: Boolean(selectedCardId),
+    queryFn: () =>
+      fetchCardAnalysis({
+        cardId: selectedCardId ?? '',
+        fileHash,
+      }),
+    queryKey: ['card-analysis', fileHash, selectedCardId],
   })
 
   const visibleTransactions = useMemo(() => {
@@ -109,6 +119,7 @@ export function ReviewQueue({
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
     setHistory([])
+    setSelectedCardId(null)
   }, [fileHash, items])
 
   const decide = useCallback(
@@ -317,7 +328,24 @@ export function ReviewQueue({
 
           {activeTransaction ? (
             <TransactionDetail
+              cardAnalysis={
+                selectedCardId === activeTransaction.cardId
+                  ? selectedCardAnalysisQuery.data ?? null
+                  : null
+              }
+              cardAnalysisError={
+                selectedCardId === activeTransaction.cardId &&
+                selectedCardAnalysisQuery.error instanceof Error
+                  ? selectedCardAnalysisQuery.error.message
+                  : null
+              }
+              isCardAnalysisLoading={
+                selectedCardId === activeTransaction.cardId &&
+                selectedCardAnalysisQuery.isFetching
+              }
               onDecide={decide}
+              onSelectCard={setSelectedCardId}
+              selectedCardId={selectedCardId}
               transaction={activeTransaction}
             />
           ) : (

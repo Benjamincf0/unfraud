@@ -1,20 +1,33 @@
+import { CardAnalysisPanel } from './CardAnalysisPanel'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
-import type { ReviewDecision, TransactionFlag } from '../../types'
+import type { CardAnalysis, ReviewDecision, TransactionFlag } from '../../types'
 
 type TransactionDetailProps = {
+  cardAnalysis: CardAnalysis | null
+  cardAnalysisError: string | null
+  isCardAnalysisLoading: boolean
   onDecide: (
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onSelectCard: (cardId: string) => void
+  selectedCardId: string | null
   transaction: TransactionFlag
 }
 
 export function TransactionDetail({
+  cardAnalysis,
+  cardAnalysisError,
+  isCardAnalysisLoading,
   onDecide,
+  onSelectCard,
+  selectedCardId,
   transaction,
 }: TransactionDetailProps) {
+  const isCurrentCardSelected = selectedCardId === transaction.cardId
+
   return (
     <Card className="transaction-detail">
       <CardHeader>
@@ -33,19 +46,18 @@ export function TransactionDetail({
           <span>{Math.round(transaction.score * 100)} risk</span>
         </div>
 
-        <div className="visualization-grid" aria-label="Visualization areas">
-          <div className="visualization-slot">
-            <span>Risk graph</span>
-          </div>
-          <div className="visualization-slot">
-            <span>Amount graph</span>
-          </div>
-        </div>
-
         <dl className="detail-grid">
           <div>
             <dt>Card</dt>
-            <dd>{transaction.cardId}</dd>
+            <dd>
+              <button
+                className="inline-link"
+                onClick={() => onSelectCard(transaction.cardId)}
+                type="button"
+              >
+                {transaction.cardId}
+              </button>
+            </dd>
           </div>
           <div>
             <dt>Channel</dt>
@@ -105,6 +117,28 @@ export function TransactionDetail({
             </div>
           </dl>
         </section>
+
+        {isCurrentCardSelected ? (
+          <CardAnalysisPanel
+            analysis={cardAnalysis}
+            error={cardAnalysisError}
+            isLoading={isCardAnalysisLoading}
+            transactionId={transaction.transactionId}
+          />
+        ) : (
+          <section className="card-analysis-prompt">
+            <div>
+              <strong>Card history</strong>
+            </div>
+            <Button
+              onClick={() => onSelectCard(transaction.cardId)}
+              size="sm"
+              variant="outline"
+            >
+              Open Card
+            </Button>
+          </section>
+        )}
 
         <div className="action-row">
           <Button onClick={() => onDecide(transaction.transactionId, 'approved')}>
