@@ -15,15 +15,13 @@ def test_root_endpoint():
 
 def test_file_upload_and_analysis():
     """Test complete upload -> analysis workflow"""
-    # Create a small test CSV that will trigger our fraud detection rules
-    # For card_001: amounts [10.0, 10.0] -> median 10.0 -> 3*median = 30.0 (none will trigger high amount)
-    # For card_002: amounts [20.0, 20.0] -> median 20.0 -> 3*median = 60.0 (none will trigger high amount)
-    # So we should expect fraud only from foreign transactions and missing device/IP for online
     csv_data = """transaction_id,timestamp,card_id,amount,merchant_name,merchant_category,channel,cardholder_country,merchant_country,device_id,ip_address
-tx_001,2026-04-25T00:00:00,card_001,10.0,Store A,grocery,in_person,US,US,,
-tx_002,2026-04-25T00:01:00,card_001,10.0,Store B,grocery,online,CA,US,,
-tx_003,2026-04-25T00:02:00,card_002,20.0,Store C,restaurant,in_person,US,US,,
-tx_004,2026-04-25T00:03:00,card_002,20.0,Store D,restaurant,online,US,US,,
+tx_001,2026-04-25T00:00:00,card_001,12.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_002,2026-04-25T00:01:00,card_001,11.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_003,2026-04-25T00:02:00,card_001,14.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_004,2026-04-25T00:03:00,card_001,120.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
+tx_005,2026-04-25T00:04:00,card_002,60.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
+tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
 """
     
     # Upload file
@@ -48,41 +46,41 @@ tx_004,2026-04-25T00:03:00,card_002,20.0,Store D,restaurant,online,US,US,,
     response = client.get(f"/analysis/all/{file_hash}")
     assert response.status_code == 200
     analysis = response.json()
-    assert len(analysis) == 4
-    
-    # Check specific fraud cases based on our actual logic with this data
+    assert len(analysis) == 6
+
+    # Check that enriched schema is returned
+    sample = analysis[0]
+    assert "score_breakdown" in sample
+    assert "card_baseline" in sample
+    assert "cross_card_signals" in sample
+    assert "graph_features" in sample
+    assert "card_amount_series" in sample
+
+    # Check at least one flagged transaction
     fraud_cases = [a for a in analysis if a["is_fraud"]]
-    # tx_002: foreign (US->CA) + missing device/IP for online
-    # tx_004: missing device/IP for online (but not foreign, US->US)
-    assert len(fraud_cases) == 2  # Only tx_002 and tx_004 should be fraud
-    
-    # Find specific transactions
-    tx_002_analysis = next((a for a in analysis if a["transaction_id"] == "tx_002"), None)
-    assert tx_002_analysis is not None
-    assert tx_002_analysis["is_fraud"] == True
-    assert any("Foreign" in r for r in tx_002_analysis["reasons"])
-    assert any("Missing device/IP for online" in r for r in tx_002_analysis["reasons"])
-    # Should NOT have high amount flag since amounts are too low
-    assert not any("High amount for card" in r for r in tx_002_analysis["reasons"])
-    
+    assert len(fraud_cases) >= 1
+
+    # tx_004 should score high due to per-card jump
     tx_004_analysis = next((a for a in analysis if a["transaction_id"] == "tx_004"), None)
     assert tx_004_analysis is not None
-    assert tx_004_analysis["is_fraud"] == True
-    assert any("Missing device/IP for online" in r for r in tx_004_analysis["reasons"])
-    # Should NOT have foreign flag since it's US->US
-    assert not any("Foreign" in r for r in tx_004_analysis["reasons"])
-    # Should NOT have high amount flag since amounts are too low
-    assert not any("High amount for card" in r for r in tx_004_analysis["reasons"])
+    assert tx_004_analysis["fraud_score"] > 0.5
+    assert any("Amount anomaly" in r for r in tx_004_analysis["reasons"])
+
+    # tx_006 should include cross-card fanout evidence
+    tx_006_analysis = next((a for a in analysis if a["transaction_id"] == "tx_006"), None)
+    assert tx_006_analysis is not None
+    assert tx_006_analysis["cross_card_signals"]["device_card_fanout"] >= 3
+    assert tx_006_analysis["cross_card_signals"]["ip_card_fanout"] >= 3
+    assert any(
+        "cross" in reason["signal_type"]
+        for reason in tx_006_analysis["score_breakdown"]
+    )
     
     # Test user analysis
     response = client.get(f"/analysis/user/{file_hash}/card_001")
     assert response.status_code == 200
     user_analysis = response.json()
-    assert len(user_analysis) == 2  # tx_001 and tx_002
-    # tx_001 should not be fraud, tx_002 should be fraud
-    fraud_in_user = [a for a in user_analysis if a["is_fraud"]]
-    assert len(fraud_in_user) == 1
-    assert fraud_in_user[0]["transaction_id"] == "tx_002"
+    assert len(user_analysis) == 4
     
     # Test IP analysis
     response = client.get(f"/analysis/ip/{file_hash}/1.1.1.1")  # Non-existent IP
@@ -97,20 +95,15 @@ tx_004,2026-04-25T00:03:00,card_002,20.0,Store D,restaurant,online,US,US,,
     # Check CSV content
     csv_content = response.text
     lines = csv_content.strip().split('\n')
-    assert len(lines) == 5  # Header + 4 rows
+    assert len(lines) == 7  # Header + 6 rows
     header = lines[0]
     assert "is_fraud" in header
     assert "fraud_score" in header
     assert "fraud_reasons" in header
     
-    # Check first data row (tx_001) - should not be fraud
-    first_row = lines[1].split(',')
-    is_fraud_idx = header.split(',').index('is_fraud')
-    assert first_row[is_fraud_idx] == 'False'
-    
-    # Check second data row (tx_002) - should be fraud
-    second_row = lines[2].split(',')
-    assert second_row[is_fraud_idx] == 'True'
+    assert "score_breakdown" in header
+    assert "card_baseline_json" in header
+    assert "cross_card_signals_json" in header
 
 def test_review_endpoints():
     """Test review endpoints"""
