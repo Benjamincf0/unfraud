@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Slider } from './ui/slider'
 import { Tabs } from './ui/tabs'
-import { submitReviewDecision } from '../api/review'
+import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
 import type { ReviewSession } from '../lib/reviewSessions'
 import type {
   DecisionAction,
@@ -90,6 +90,20 @@ export function ReviewQueue({
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
     visibleTransactions[0]
+  const reviewableTransactionIds = useMemo(
+    () => new Set(transactions.map((transaction) => transaction.transactionId)),
+    [transactions],
+  )
+
+  const activeCardAnalysisQuery = useQuery({
+    enabled: Boolean(activeTransaction?.cardId),
+    queryFn: () =>
+      fetchCardAnalysis({
+        cardId: activeTransaction?.cardId ?? '',
+        fileHash,
+      }),
+    queryKey: ['card-analysis', fileHash, activeTransaction?.cardId],
+  })
 
   const queueStats = useMemo(() => {
     return transactions.reduce(
@@ -164,6 +178,26 @@ export function ReviewQueue({
     setHistory(rest)
     setActiveId(lastAction.transactionId)
   }, [history])
+
+  const selectTransactionFromHistory = useCallback(
+    (transactionId: string) => {
+      const transaction = transactions.find(
+        (item) => item.transactionId === transactionId,
+      )
+
+      if (!transaction) {
+        return
+      }
+
+      setFilter('all')
+      setQuery('')
+      setThreshold((currentThreshold) =>
+        Math.min(currentThreshold, Math.floor(transaction.score * 100)),
+      )
+      setActiveId(transactionId)
+    },
+    [transactions],
+  )
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
@@ -291,7 +325,7 @@ export function ReviewQueue({
             <Slider
               id="review-threshold"
               max={95}
-              min={20}
+              min={0}
               onChange={(event) => setThreshold(Number(event.target.value))}
               value={threshold}
             />
@@ -317,7 +351,16 @@ export function ReviewQueue({
 
           {activeTransaction ? (
             <TransactionDetail
+              cardAnalysis={activeCardAnalysisQuery.data ?? null}
+              cardAnalysisError={
+                activeCardAnalysisQuery.error instanceof Error
+                  ? activeCardAnalysisQuery.error.message
+                  : null
+              }
+              isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
+              onSelectTransaction={selectTransactionFromHistory}
+              reviewableTransactionIds={reviewableTransactionIds}
               transaction={activeTransaction}
             />
           ) : (
