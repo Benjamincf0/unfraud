@@ -31,6 +31,36 @@ export type TransactionFlag = {
   }
 }
 
+export type CardTransaction = {
+  transactionId: string
+  timestamp: string
+  amount: number
+  merchantName: string
+  merchantCategory: string
+  channel: 'online' | 'in_person' | 'atm'
+  cardholderCountry: string
+  merchantCountry: string
+  deviceId?: string
+  ipAddress?: string
+  score: number
+  isFraud: boolean
+  reasons: RiskReason[]
+}
+
+export type CardAnalysis = {
+  cardId: string
+  transactions: CardTransaction[]
+  summary: {
+    totalSpend: number
+    medianAmount: number
+    highestAmount: number
+    fraudCount: number
+    transactionCount: number
+    categories: string[]
+    countries: string[]
+  }
+}
+
 export type DecisionAction = {
   transactionId: string
   previousDecision: ReviewDecision

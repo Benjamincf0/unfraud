@@ -50,6 +50,12 @@ class FraudAnalysis(BaseModel):
     graph_features: Dict[str, float] = Field(default_factory=dict)
     card_amount_series: List[Dict[str, Any]] = Field(default_factory=list)
 
+class AnalyzedTransaction(TransactionBase):
+    is_fraud: bool
+    fraud_score: float
+    fraud_reasons: List[str]
+    reasons: List[str] = Field(default_factory=list)
+
 class ReviewAction(BaseModel):
     action: str  # approve, dismiss, escalate
     reviewer_notes: Optional[str] = None
@@ -525,13 +531,39 @@ async def get_all_analysis(file_hash: str):
     analyzed_df = _get_or_compute_analysis(file_hash)
     return [_to_fraud_analysis(row) for _, row in analyzed_df.iterrows()]
 
-@app.get("/analysis/user/{file_hash}/{card_id}")
+def row_to_analyzed_transaction(row: Any) -> AnalyzedTransaction:
+    reasons = []
+    if row['fraud_reasons']:
+        reasons = [r.strip() for r in row['fraud_reasons'].split(';') if r.strip()]
+
+    return AnalyzedTransaction(
+        transaction_id=row['transaction_id'],
+        timestamp=row['timestamp'],
+        card_id=row['card_id'],
+        amount=float(row['amount']),
+        merchant_name=row['merchant_name'],
+        merchant_category=row['merchant_category'],
+        channel=row['channel'],
+        cardholder_country=row['cardholder_country'],
+        merchant_country=row['merchant_country'],
+        device_id=None if pd.isna(row.get('device_id')) else row.get('device_id'),
+        ip_address=None if pd.isna(row.get('ip_address')) else row.get('ip_address'),
+        is_fraud=bool(row['is_fraud']),
+        fraud_score=float(row['fraud_score']),
+        fraud_reasons=reasons,
+        reasons=reasons,
+    )
+
+@app.get("/analysis/user/{file_hash}/{card_id}", response_model=List[AnalyzedTransaction])
 async def get_user_analysis(file_hash: str, card_id: str):
     analyzed_df = _get_or_compute_analysis(file_hash)
     user_df = analyzed_df[analyzed_df["card_id"] == card_id]
     if user_df.empty:
         raise HTTPException(status_code=404, detail="No transactions found for this card")
-    return [_to_fraud_analysis(row) for _, row in user_df.iterrows()]
+    return [
+        row_to_analyzed_transaction(row)
+        for _, row in user_df.sort_values('timestamp').iterrows()
+    ]
 
 @app.get("/analysis/ip/{file_hash}/{ip_address}")
 async def get_ip_analysis(file_hash: str, ip_address: str):

@@ -1,18 +1,29 @@
+import { CardAnalysisPanel } from './CardAnalysisPanel'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
-import type { ReviewDecision, TransactionFlag } from '../../types'
+import type { CardAnalysis, ReviewDecision, TransactionFlag } from '../../types'
 
 type TransactionDetailProps = {
+  cardAnalysis: CardAnalysis | null
+  cardAnalysisError: string | null
+  isCardAnalysisLoading: boolean
   onDecide: (
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onSelectTransaction: (transactionId: string) => void
+  reviewableTransactionIds: Set<string>
   transaction: TransactionFlag
 }
 
 export function TransactionDetail({
+  cardAnalysis,
+  cardAnalysisError,
+  isCardAnalysisLoading,
   onDecide,
+  onSelectTransaction,
+  reviewableTransactionIds,
   transaction,
 }: TransactionDetailProps) {
   return (
@@ -31,15 +42,6 @@ export function TransactionDetail({
         <div className="amount-row">
           <span>{formatCurrency(transaction.amount)}</span>
           <span>{Math.round(transaction.score * 100)} risk</span>
-        </div>
-
-        <div className="visualization-grid" aria-label="Visualization areas">
-          <div className="visualization-slot">
-            <span>Risk graph</span>
-          </div>
-          <div className="visualization-slot">
-            <span>Amount graph</span>
-          </div>
         </div>
 
         <dl className="detail-grid">
@@ -105,6 +107,15 @@ export function TransactionDetail({
             </div>
           </dl>
         </section>
+
+        <CardAnalysisPanel
+          analysis={cardAnalysis}
+          error={cardAnalysisError}
+          isLoading={isCardAnalysisLoading}
+          onSelectTransaction={onSelectTransaction}
+          reviewableTransactionIds={reviewableTransactionIds}
+          transactionId={transaction.transactionId}
+        />
 
         <div className="action-row">
           <Button onClick={() => onDecide(transaction.transactionId, 'approved')}>
