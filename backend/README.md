@@ -10,11 +10,11 @@ This is the FastAPI backend for the fraud detection application.
 
 ### Analysis Endpoints
 - **GET /analysis/all/{file_hash}` - Get fraud analysis for all transactions
-  - Returns: List of `[FraudAnalysis]` objects
+  - Returns: List of enriched `[FraudAnalysis]` objects with explainable score payloads
 - **GET /analysis/user/{file_hash}/{card_id}` - Get fraud analysis for specific card/user
-  - Returns: List of `[FraudAnalysis]` objects
+  - Returns: Per-card slice of globally computed analysis (keeps cross-card signals intact)
 - **GET /analysis/ip/{file_hash}/{ip_address}` - Get fraud analysis for specific IP address
-  - Returns: List of `[FraudAnalysis]` objects
+  - Returns: IP-specific slice of globally computed analysis
 
 ### Review Endpoints
 - **POST /review/{file_hash}/{transaction_id}/{action}` - Review a transaction
@@ -40,9 +40,20 @@ class UploadResponse(BaseModel):
 ```python
 class FraudAnalysis(BaseModel):
     transaction_id: str
+    timestamp: str
+    card_id: str
+    amount: float
+    merchant_name: str
+    merchant_category: str
+    channel: str
     is_fraud: bool
     fraud_score: float
     reasons: List[str]
+    score_breakdown: List[Dict[str, Any]]         # weighted explainability objects
+    card_baseline: Dict[str, Any]                 # per-card baseline snapshot
+    cross_card_signals: Dict[str, Any]            # fanout/burst metrics
+    graph_features: Dict[str, float]              # numeric frontend graph inputs
+    card_amount_series: List[Dict[str, Any]]      # per-card historical points
 ```
 
 ### ReviewAction
@@ -54,12 +65,18 @@ class ReviewAction(BaseModel):
 
 ## Fraud Detection Logic
 
-The current implementation uses a simple rule-based approach:
-1. **High amount for card**: Transactions > 3x the card's median amount
-2. **Foreign transaction**: Cardholder country ≠ Merchant country
-3. **Missing device/IP for online**: Online transactions missing device_id or ip_address
-
-Each flag contributes to a fraud score (capped at 1.0) and provides human-readable reasons.
+The detector combines:
+1. **Per-card anomaly scoring**
+   - Amount deviation vs card historical median and z-score
+   - Novel category/device/IP/country for that card
+2. **Cross-card aggregation**
+   - Device reused across multiple cards
+   - IP reused across multiple cards
+   - Merchant burst behavior (velocity + unique cards in short windows)
+3. **Explainable weighted score**
+   - Final score in `[0,1]`
+   - Reason-level `weight`, `signal_type`, `value`, and `baseline` for auditability
+   - `fraud_reasons` remains available for backward compatibility
 
 ## Installation
 
