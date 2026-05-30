@@ -17,6 +17,7 @@ type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
   items: TransactionFlag[]
+  source: 'api' | 'sample'
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
@@ -27,7 +28,7 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalate' },
 ]
 
-export function ReviewQueue({ items }: ReviewQueueProps) {
+export function ReviewQueue({ items, source }: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
@@ -262,7 +263,8 @@ export function ReviewQueue({ items }: ReviewQueueProps) {
           <div>
             <h1>Flagged Transactions</h1>
             <p>
-              {queueStats.pending} pending of {transactions.length} flagged
+              {queueStats.pending} pending of {transactions.length} flagged ·{' '}
+              {source === 'api' ? 'API data' : 'sample data'}
             </p>
           </div>
           <Input

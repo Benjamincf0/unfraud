@@ -38,6 +38,15 @@ button:disabled {
   min-height: 100vh;
 }
 
+.loading-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #0e0e10;
+  color: #f0f0f0;
+  font-size: 15px;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
