@@ -94,50 +94,61 @@ def add_change_features(df):
     """Did merchant/device/country change vs the card's previous tx?"""
     g = df.sort_values("timestamp").copy()
     grp = g.groupby("card_id")
+
     g["merchant_change"] = (
         g["merchant_name"] != grp["merchant_name"].shift()
-    ).astype(int)
+    ).fillna(False).astype(int)  # first tx per card → no change
+
     g["device_change"] = (
         g["device_id"].fillna("NA") != grp["device_id"].shift().fillna("NA")
-    ).astype(int)
+    ).fillna(False).astype(int)
+
     g["prev_merch_country"] = grp["merchant_country"].shift()
     g["country_hop"] = (
         (g["merchant_country"] != g["prev_merch_country"])
         & g["prev_merch_country"].notna()
-    ).astype(int)
+    ).fillna(False).astype(int)
+
     g["minutes_since_last"] = g["time_since_last"] / 60.0
-    # fast country hop = classic cloning tell
+
     g["fast_country_hop"] = (
         (g["country_hop"] == 1) & (g["minutes_since_last"] < 60)
-    ).astype(int)
+    ).fillna(False).astype(int)
+
     g["cross_border"] = (
         g["cardholder_country"] != g["merchant_country"]
-    ).astype(int)
+    ).fillna(False).astype(int)
+
     return g
 
 
 def add_device_ip_velocity(df):
-    """How many distinct cards touched this device/IP recently?
-    A device or IP fanning out across many cards is a strong fraud-ring tell."""
     g = df.sort_values("timestamp").copy()
+    g = g.reset_index(drop=True)  # ensure clean integer index
+
+    # Encode card_id as integers once — rolling.apply needs numeric data
+    card_codes = pd.Categorical(g["card_id"]).codes.astype(float)
 
     def fanout(col, win="24h"):
-        # rolling count of distinct cards per entity in a time window
-        sub = g[["timestamp", col, "card_id"]].dropna(subset=[col]).copy()
-        sub = sub.set_index("timestamp")
-        # nunique isn't supported in rolling; approximate via factorize trick
-        out = (
-            sub.groupby(col)["card_id"]
-            .transform(
-                lambda s: s.rolling(win).apply(
-                    lambda x: len(pd.unique(x)), raw=False
-                )
-            )
-        )
-        return out.reindex(g.index).values
+        sub = pd.DataFrame({
+            "timestamp": g["timestamp"],
+            col: g[col],
+            "card_code": card_codes,
+            "orig_idx": g.index,
+        }).dropna(subset=[col]).copy()
 
-    # NOTE: rolling.apply with unique is O(n*w); fine for moderate data.
-    # For large data, switch to a hashed approximate-distinct or pre-agg.
+        results = np.full(len(g), np.nan)
+
+        for entity, grp in sub.groupby(col):
+            grp = grp.set_index("timestamp")
+            rolled = grp["card_code"].rolling(win).apply(
+                lambda x: len(np.unique(x)), raw=True  # raw=True → numpy array, faster
+            )
+            # map results back via orig_idx (not timestamp, which has dupes)
+            results[grp["orig_idx"].values] = rolled.values
+
+        return results
+
     g["device_card_fanout_24h"] = pd.Series(
         fanout("device_id"), index=g.index
     ).fillna(1)
