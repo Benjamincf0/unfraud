@@ -3,7 +3,7 @@ import type { ReviewDecision, RiskReason, TransactionFlag } from '../types'
 export type ReviewDataResult = {
   fileHash: string
   items: TransactionFlag[]
-  source: 'upload'
+  source: 'cache' | 'upload'
 }
 
 type BackendUploadResponse = {
@@ -30,6 +30,12 @@ type CsvTransaction = {
   merchant_country: string
   device_id?: string
   ip_address?: string
+}
+
+type AnalyzedCsvTransaction = CsvTransaction & {
+  fraud_reasons: string[]
+  fraud_score: number
+  is_fraud: boolean
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -72,6 +78,24 @@ export async function uploadTransactionsCsv(
     fileHash: uploadPayload.file_hash,
     items: mergeTransactionsWithAnalysis(csvTransactions, analysis),
     source: 'upload',
+  }
+}
+
+export async function fetchReviewDataByHash(
+  fileHash: string,
+): Promise<ReviewDataResult> {
+  const exportResponse = await fetch(`${apiBaseUrl}/export/${fileHash}`)
+
+  if (!exportResponse.ok) {
+    throw new Error(await getErrorMessage(exportResponse, 'Cached result failed'))
+  }
+
+  const csv = await exportResponse.text()
+
+  return {
+    fileHash,
+    items: mapAnalyzedTransactions(parseAnalyzedTransactionsCsv(csv)),
+    source: 'cache',
   }
 }
 
@@ -158,6 +182,75 @@ function parseTransactionsCsv(csv: string): CsvTransaction[] {
     })
 }
 
+function parseAnalyzedTransactionsCsv(csv: string): AnalyzedCsvTransaction[] {
+  const rows = parseCsvRows(csv)
+
+  if (rows.length < 2) {
+    throw new Error('Cached result is empty')
+  }
+
+  const [headers, ...dataRows] = rows
+  const headerIndex = new Map(headers.map((header, index) => [header, index]))
+  const requiredHeaders = [
+    'transaction_id',
+    'timestamp',
+    'card_id',
+    'amount',
+    'merchant_name',
+    'merchant_category',
+    'channel',
+    'cardholder_country',
+    'merchant_country',
+    'is_fraud',
+    'fraud_score',
+    'fraud_reasons',
+  ]
+  const missingHeaders = requiredHeaders.filter(
+    (header) => !headerIndex.has(header),
+  )
+
+  if (missingHeaders.length > 0) {
+    throw new Error(
+      `Cached result is missing required columns: ${missingHeaders.join(', ')}`,
+    )
+  }
+
+  return dataRows
+    .filter((row) => row.some((value) => value.trim()))
+    .map((row) => {
+      const get = (header: string) => row[headerIndex.get(header) ?? -1] ?? ''
+      const amount = Number(get('amount'))
+      const fraudScore = Number(get('fraud_score'))
+
+      if (!Number.isFinite(amount)) {
+        throw new Error(`Invalid amount for transaction ${get('transaction_id')}`)
+      }
+
+      if (!Number.isFinite(fraudScore)) {
+        throw new Error(
+          `Invalid fraud score for transaction ${get('transaction_id')}`,
+        )
+      }
+
+      return {
+        amount,
+        card_id: get('card_id'),
+        cardholder_country: get('cardholder_country'),
+        channel: normalizeChannel(get('channel')),
+        device_id: emptyToUndefined(get('device_id')),
+        fraud_reasons: parseFraudReasons(get('fraud_reasons')),
+        fraud_score: fraudScore,
+        ip_address: emptyToUndefined(get('ip_address')),
+        is_fraud: parseBoolean(get('is_fraud')),
+        merchant_category: get('merchant_category'),
+        merchant_country: get('merchant_country'),
+        merchant_name: get('merchant_name'),
+        timestamp: get('timestamp'),
+        transaction_id: get('transaction_id'),
+      }
+    })
+}
+
 function parseCsvRows(csv: string): string[][] {
   const rows: string[][] = []
   let row: string[] = []
@@ -235,6 +328,31 @@ function mergeTransactionsWithAnalysis(
       ): transaction is TransactionFlag & { isFraudCandidate: boolean } =>
         transaction !== null &&
         (transaction.isFraudCandidate || transaction.score > 0),
+    )
+    .map(stripFraudCandidateMarker)
+    .sort((first, second) => second.score - first.score)
+}
+
+function mapAnalyzedTransactions(
+  transactions: AnalyzedCsvTransaction[],
+): TransactionFlag[] {
+  const contextByCard = buildCardContext(transactions)
+
+  return transactions
+    .map((transaction) =>
+      toTransactionFlag(
+        transaction,
+        {
+          fraud_score: transaction.fraud_score,
+          is_fraud: transaction.is_fraud,
+          reasons: transaction.fraud_reasons,
+          transaction_id: transaction.transaction_id,
+        },
+        contextByCard.get(transaction.card_id),
+      ),
+    )
+    .filter(
+      (transaction) => transaction.isFraudCandidate || transaction.score > 0,
     )
     .map(stripFraudCandidateMarker)
     .sort((first, second) => second.score - first.score)
@@ -427,4 +545,15 @@ function normalizeChannel(channel: string): CsvTransaction['channel'] {
 
 function emptyToUndefined(value: string) {
   return value.trim() === '' ? undefined : value
+}
+
+function parseBoolean(value: string) {
+  return value.trim().toLowerCase() === 'true'
+}
+
+function parseFraudReasons(value: string) {
+  return value
+    .split(';')
+    .map((reason) => reason.trim())
+    .filter(Boolean)
 }
