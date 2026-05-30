@@ -124,7 +124,7 @@ button:disabled {
   height: 100vh;
   border-right: 1px solid #2c2c33;
   background: #151518;
-  overflow: auto;
+  overflow: hidden;
   padding: 24px 18px;
 }
 
@@ -224,11 +224,15 @@ button:disabled {
 }
 
 .audit-section {
+  flex: 1 1 auto;
   min-height: 0;
 }
 
 .audit-list {
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .audit-row {
@@ -238,7 +242,11 @@ button:disabled {
 }
 
 .shortcut-section {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin: 0 -18px -24px;
+  border-top: 1px solid #2c2c33;
+  background: #151518;
+  padding: 16px 18px 24px;
 }
 
 .shortcut-list {
