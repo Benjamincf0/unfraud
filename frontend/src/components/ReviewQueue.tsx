@@ -56,21 +56,11 @@ export function ReviewQueue({
   const [query, setQuery] = useState('')
   const [threshold, setThreshold] = useState(55)
   const [history, setHistory] = useState<DecisionAction[]>([])
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
   const {
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
   } = useMutation({
     mutationFn: submitReviewDecision,
-  })
-  const selectedCardAnalysisQuery = useQuery({
-    enabled: Boolean(selectedCardId),
-    queryFn: () =>
-      fetchCardAnalysis({
-        cardId: selectedCardId ?? '',
-        fileHash,
-      }),
-    queryKey: ['card-analysis', fileHash, selectedCardId],
   })
 
   const visibleTransactions = useMemo(() => {
@@ -101,6 +91,16 @@ export function ReviewQueue({
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
     visibleTransactions[0]
 
+  const activeCardAnalysisQuery = useQuery({
+    enabled: Boolean(activeTransaction?.cardId),
+    queryFn: () =>
+      fetchCardAnalysis({
+        cardId: activeTransaction?.cardId ?? '',
+        fileHash,
+      }),
+    queryKey: ['card-analysis', fileHash, activeTransaction?.cardId],
+  })
+
   const queueStats = useMemo(() => {
     return transactions.reduce(
       (stats, transaction) => {
@@ -119,7 +119,6 @@ export function ReviewQueue({
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
     setHistory([])
-    setSelectedCardId(null)
   }, [fileHash, items])
 
   const decide = useCallback(
@@ -328,24 +327,14 @@ export function ReviewQueue({
 
           {activeTransaction ? (
             <TransactionDetail
-              cardAnalysis={
-                selectedCardId === activeTransaction.cardId
-                  ? selectedCardAnalysisQuery.data ?? null
-                  : null
-              }
+              cardAnalysis={activeCardAnalysisQuery.data ?? null}
               cardAnalysisError={
-                selectedCardId === activeTransaction.cardId &&
-                selectedCardAnalysisQuery.error instanceof Error
-                  ? selectedCardAnalysisQuery.error.message
+                activeCardAnalysisQuery.error instanceof Error
+                  ? activeCardAnalysisQuery.error.message
                   : null
               }
-              isCardAnalysisLoading={
-                selectedCardId === activeTransaction.cardId &&
-                selectedCardAnalysisQuery.isFetching
-              }
+              isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
-              onSelectCard={setSelectedCardId}
-              selectedCardId={selectedCardId}
               transaction={activeTransaction}
             />
           ) : (

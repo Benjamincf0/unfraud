@@ -12,8 +12,6 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
-  onSelectCard: (cardId: string) => void
-  selectedCardId: string | null
   transaction: TransactionFlag
 }
 
@@ -22,12 +20,8 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
-  onSelectCard,
-  selectedCardId,
   transaction,
 }: TransactionDetailProps) {
-  const isCurrentCardSelected = selectedCardId === transaction.cardId
-
   return (
     <Card className="transaction-detail">
       <CardHeader>
@@ -49,15 +43,7 @@ export function TransactionDetail({
         <dl className="detail-grid">
           <div>
             <dt>Card</dt>
-            <dd>
-              <button
-                className="inline-link"
-                onClick={() => onSelectCard(transaction.cardId)}
-                type="button"
-              >
-                {transaction.cardId}
-              </button>
-            </dd>
+            <dd>{transaction.cardId}</dd>
           </div>
           <div>
             <dt>Channel</dt>
@@ -118,27 +104,12 @@ export function TransactionDetail({
           </dl>
         </section>
 
-        {isCurrentCardSelected ? (
-          <CardAnalysisPanel
-            analysis={cardAnalysis}
-            error={cardAnalysisError}
-            isLoading={isCardAnalysisLoading}
-            transactionId={transaction.transactionId}
-          />
-        ) : (
-          <section className="card-analysis-prompt">
-            <div>
-              <strong>Card history</strong>
-            </div>
-            <Button
-              onClick={() => onSelectCard(transaction.cardId)}
-              size="sm"
-              variant="outline"
-            >
-              Open Card
-            </Button>
-          </section>
-        )}
+        <CardAnalysisPanel
+          analysis={cardAnalysis}
+          error={cardAnalysisError}
+          isLoading={isCardAnalysisLoading}
+          transactionId={transaction.transactionId}
+        />
 
         <div className="action-row">
           <Button onClick={() => onDecide(transaction.transactionId, 'approved')}>

@@ -378,25 +378,6 @@ button:disabled {
   text-transform: capitalize;
 }
 
-.inline-link {
-  border: 0;
-  background: transparent;
-  color: #00ff9f;
-  padding: 0;
-  font: inherit;
-  font-weight: 700;
-  text-align: left;
-}
-
-.inline-link:hover {
-  color: #8dffd0;
-}
-
-.inline-link:focus-visible {
-  outline: 2px solid #00ff9f;
-  outline-offset: 2px;
-}
-
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -451,20 +432,11 @@ button:disabled {
   text-align: right;
 }
 
-.card-analysis-prompt,
 .card-analysis-panel {
   border-top: 1px solid #2c2c33;
   padding-top: 14px;
 }
 
-.card-analysis-prompt {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.card-analysis-prompt strong,
 .card-analysis-header h3 {
   margin: 0;
   color: #f0f0f0;
