@@ -78,49 +78,104 @@ function CardHistoryChart({
   transactions: CardTransaction[]
 }) {
   const maxAmount = Math.max(1, ...transactions.map((item) => item.amount))
+  const halfAmount = maxAmount / 2
+  const firstTransaction = transactions[0]
+  const lastTransaction = transactions[transactions.length - 1]
 
   return (
     <div className="card-history-chart" aria-label="Card transaction history">
-      <div className="chart-bars">
-        {transactions.map((item) => {
-          const amountPercent = Math.max(4, (item.amount / maxAmount) * 100)
-          const riskPercent = Math.max(2, item.score * 100)
+      <div className="chart-title-row">
+        <strong>Transaction amount over time</strong>
+        <span>Y: amount · X: transaction date</span>
+      </div>
 
-          return (
-            <div className="chart-column" key={item.transactionId}>
-              <div className="chart-track">
-                <span
-                  className={[
-                    'chart-risk-marker',
-                    item.isFraud ? 'chart-risk-marker-flagged' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  style={{ bottom: `${riskPercent}%` }}
-                  title={`${Math.round(item.score * 100)} risk`}
-                />
-                <span
-                  className={[
-                    'chart-bar',
-                    item.transactionId === currentTransactionId
-                      ? 'chart-bar-current'
-                      : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  style={{ height: `${amountPercent}%` }}
-                  title={`${item.transactionId}: ${formatCurrency(item.amount)}`}
-                />
-              </div>
-            </div>
-          )
-        })}
+      <div className="chart-plot">
+        <div className="chart-y-axis" aria-hidden="true">
+          <span>{formatCompactCurrency(maxAmount)}</span>
+          <span>{formatCompactCurrency(halfAmount)}</span>
+          <span>$0</span>
+        </div>
+
+        <div className="chart-body">
+          <div className="chart-grid" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="chart-bars">
+            {transactions.map((item) => {
+              const amountPercent = Math.max(4, (item.amount / maxAmount) * 100)
+
+              return (
+                <div className="chart-column" key={item.transactionId}>
+                  <div className="chart-track">
+                    <span
+                      className={[
+                        'chart-bar',
+                        item.isFraud ? 'chart-bar-flagged' : '',
+                        item.transactionId === currentTransactionId
+                          ? 'chart-bar-current'
+                          : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      style={{ height: `${amountPercent}%` }}
+                      title={`${item.transactionId}: ${formatCurrency(
+                        item.amount,
+                      )} on ${formatShortDate(item.timestamp)}`}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="chart-x-axis" aria-hidden="true">
+        <span>
+          {firstTransaction ? formatShortDate(firstTransaction.timestamp) : ''}
+        </span>
+        <strong>Transaction date</strong>
+        <span>
+          {lastTransaction ? formatShortDate(lastTransaction.timestamp) : ''}
+        </span>
       </div>
       <div className="chart-legend">
-        <span>Amount</span>
-        <span>Risk marker</span>
-        <span>Current transaction</span>
+        <span>
+          <i className="legend-swatch legend-swatch-normal" />
+          Normal transaction
+        </span>
+        <span>
+          <i className="legend-swatch legend-swatch-flagged" />
+          Flagged transaction
+        </span>
+        <span>
+          <i className="legend-swatch legend-swatch-current" />
+          Current transaction
+        </span>
       </div>
     </div>
   )
+}
+
+function formatShortDate(timestamp: string) {
+  const date = new Date(timestamp)
+
+  if (Number.isNaN(date.getTime())) {
+    return timestamp
+  }
+
+  return date.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+  })
+}
+
+function formatCompactCurrency(value: number) {
+  if (value >= 1000) {
+    return `$${Math.round(value / 100) / 10}k`
+  }
+
+  return `$${Math.round(value)}`
 }
