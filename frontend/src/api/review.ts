@@ -1,4 +1,9 @@
-import type { ReviewDecision, RiskReason, TransactionFlag } from '../types'
+import type {
+  CardAnalysis,
+  ReviewDecision,
+  RiskReason,
+  TransactionFlag,
+} from '../types'
 
 export type ReviewDataResult = {
   fileHash: string
@@ -33,6 +38,12 @@ type CsvTransaction = {
 }
 
 type AnalyzedCsvTransaction = CsvTransaction & {
+  fraud_reasons: string[]
+  fraud_score: number
+  is_fraud: boolean
+}
+
+type BackendAnalyzedTransaction = CsvTransaction & {
   fraud_reasons: string[]
   fraud_score: number
   is_fraud: boolean
@@ -125,6 +136,26 @@ export async function submitReviewDecision({
   }
 
   return response.json()
+}
+
+export async function fetchCardAnalysis({
+  cardId,
+  fileHash,
+}: {
+  cardId: string
+  fileHash: string
+}): Promise<CardAnalysis> {
+  const response = await fetch(
+    `${apiBaseUrl}/analysis/user/${fileHash}/${encodeURIComponent(cardId)}`,
+  )
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Card analysis failed'))
+  }
+
+  const transactions = (await response.json()) as BackendAnalyzedTransaction[]
+
+  return toCardAnalysis(cardId, transactions)
 }
 
 function parseTransactionsCsv(csv: string): CsvTransaction[] {
@@ -356,6 +387,72 @@ function mapAnalyzedTransactions(
     )
     .map(stripFraudCandidateMarker)
     .sort((first, second) => second.score - first.score)
+}
+
+function toCardAnalysis(
+  cardId: string,
+  transactions: BackendAnalyzedTransaction[],
+): CardAnalysis {
+  const sortedTransactions = [...transactions].sort(
+    (first, second) =>
+      new Date(first.timestamp).getTime() - new Date(second.timestamp).getTime(),
+  )
+  const amounts = sortedTransactions
+    .map((transaction) => transaction.amount)
+    .sort((first, second) => first - second)
+  const mid = Math.floor(amounts.length / 2)
+  const medianAmount =
+    amounts.length === 0
+      ? 0
+      : amounts.length % 2 === 0
+      ? (amounts[mid - 1] + amounts[mid]) / 2
+      : amounts[mid]
+
+  return {
+    cardId,
+    summary: {
+      categories: getMostCommon(
+        sortedTransactions.map((transaction) => transaction.merchant_category),
+        6,
+      ),
+      countries: getMostCommon(
+        sortedTransactions.map((transaction) => transaction.merchant_country),
+        6,
+      ),
+      fraudCount: sortedTransactions.filter((transaction) => transaction.is_fraud)
+        .length,
+      highestAmount: Math.max(
+        0,
+        ...sortedTransactions.map((transaction) => transaction.amount),
+      ),
+      medianAmount,
+      totalSpend: sortedTransactions.reduce(
+        (total, transaction) => total + transaction.amount,
+        0,
+      ),
+      transactionCount: sortedTransactions.length,
+    },
+    transactions: sortedTransactions.map((transaction) => ({
+      amount: transaction.amount,
+      cardholderCountry: transaction.cardholder_country,
+      channel: transaction.channel,
+      deviceId: transaction.device_id,
+      ipAddress: transaction.ip_address,
+      isFraud: transaction.is_fraud,
+      merchantCategory: transaction.merchant_category,
+      merchantCountry: transaction.merchant_country,
+      merchantName: transaction.merchant_name,
+      reasons: buildReasons({
+        fraud_score: transaction.fraud_score,
+        is_fraud: transaction.is_fraud,
+        reasons: transaction.fraud_reasons,
+        transaction_id: transaction.transaction_id,
+      }),
+      score: transaction.fraud_score,
+      timestamp: transaction.timestamp,
+      transactionId: transaction.transaction_id,
+    })),
+  }
 }
 
 function stripFraudCandidateMarker({
