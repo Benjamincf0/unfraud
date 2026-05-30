@@ -21,7 +21,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -316,6 +317,16 @@ button:disabled {
 
 .topbar-actions .input {
   width: min(360px, 45vw);
+}
+
+.result-select {
+  min-height: 38px;
+  max-width: 240px;
+  border: 1px solid #3b3b44;
+  border-radius: 8px;
+  background: #17171b;
+  color: #f0f0f0;
+  padding: 0 10px;
 }
 
 .review-layout {

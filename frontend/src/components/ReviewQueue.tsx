@@ -6,6 +6,7 @@ import { ReviewSidebar } from './review/ReviewSidebar'
 import { Input } from './ui/input'
 import { Tabs } from './ui/tabs'
 import { submitReviewDecision } from '../api/review'
+import type { ReviewSession } from '../lib/reviewSessions'
 import type {
   AuditEntry,
   DecisionAction,
@@ -16,9 +17,12 @@ import type {
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
+  activeFileHash: string
   fileHash: string
   items: TransactionFlag[]
   onReset: () => void
+  onSelectSession: (fileHash: string) => void
+  sessions: ReviewSession[]
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
@@ -29,7 +33,14 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalate' },
 ]
 
-export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
+export function ReviewQueue({
+  activeFileHash,
+  fileHash,
+  items,
+  onReset,
+  onSelectSession,
+  sessions,
+}: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
@@ -84,6 +95,14 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
       >,
     )
   }, [transactions])
+
+  useEffect(() => {
+    setTransactions(items)
+    setActiveId(items[0]?.transactionId ?? '')
+    setFilter('pending')
+    setHistory([])
+    setAuditLog([])
+  }, [fileHash, items])
 
   const decide = useCallback(
     (
@@ -239,6 +258,20 @@ export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
             </p>
           </div>
           <div className="topbar-actions">
+            {sessions.length > 1 ? (
+              <select
+                aria-label="Switch result set"
+                className="result-select"
+                onChange={(event) => onSelectSession(event.target.value)}
+                value={activeFileHash}
+              >
+                {sessions.map((session) => (
+                  <option key={session.fileHash} value={session.fileHash}>
+                    {session.label} · {session.fileHash.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <Input
               aria-label="Search transactions"
               onChange={(event) => setQuery(event.target.value)}
