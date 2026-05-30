@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
 import { ReviewSidebar } from './review/ReviewSidebar'
 import { Input } from './ui/input'
 import { Tabs } from './ui/tabs'
+import { submitReviewDecision } from '../api/review'
 import type {
   AuditEntry,
   DecisionAction,
@@ -14,8 +16,9 @@ import type {
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
+  fileHash: string
   items: TransactionFlag[]
-  source: 'api' | 'sample'
+  onReset: () => void
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
@@ -26,7 +29,7 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalate' },
 ]
 
-export function ReviewQueue({ items, source }: ReviewQueueProps) {
+export function ReviewQueue({ fileHash, items, onReset }: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
@@ -34,6 +37,12 @@ export function ReviewQueue({ items, source }: ReviewQueueProps) {
   const [threshold, setThreshold] = useState(55)
   const [history, setHistory] = useState<DecisionAction[]>([])
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([])
+  const {
+    isError: reviewSyncFailed,
+    mutate: syncReviewDecision,
+  } = useMutation({
+    mutationFn: submitReviewDecision,
+  })
 
   const visibleTransactions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -81,36 +90,44 @@ export function ReviewQueue({ items, source }: ReviewQueueProps) {
       transactionId: string,
       nextDecision: Exclude<ReviewDecision, 'pending'>,
     ) => {
-      setTransactions((current) =>
-        current.map((transaction) => {
-          if (transaction.transactionId !== transactionId) {
-            return transaction
-          }
-
-          setHistory((previous) => [
-            {
-              transactionId,
-              previousDecision: transaction.decision,
-              nextDecision,
-            },
-            ...previous,
-          ])
-
-          setAuditLog((previous) => [
-            {
-              id: `${transactionId}-${Date.now()}`,
-              transactionId,
-              decision: nextDecision,
-              timestamp: new Date().toISOString(),
-            },
-            ...previous,
-          ])
-
-          return { ...transaction, decision: nextDecision }
-        }),
+      const transaction = transactions.find(
+        (item) => item.transactionId === transactionId,
       )
+
+      if (!transaction) {
+        return
+      }
+
+      const action = {
+        nextDecision,
+        previousDecision: transaction.decision,
+        transactionId,
+      }
+
+      setTransactions((current) =>
+        current.map((item) =>
+          item.transactionId === transactionId
+            ? { ...item, decision: nextDecision }
+            : item,
+        ),
+      )
+      setHistory((previous) => [action, ...previous])
+      setAuditLog((previous) => [
+        {
+          id: `${transactionId}-${Date.now()}`,
+          transactionId,
+          decision: nextDecision,
+          timestamp: new Date().toISOString(),
+        },
+        ...previous,
+      ])
+      syncReviewDecision({
+        decision: nextDecision,
+        fileHash,
+        transactionId,
+      })
     },
-    [],
+    [fileHash, syncReviewDecision, transactions],
   )
 
   const undo = useCallback(() => {
@@ -218,15 +235,20 @@ export function ReviewQueue({ items, source }: ReviewQueueProps) {
             <h1>Flagged Transactions</h1>
             <p>
               {queueStats.pending} pending of {transactions.length} flagged ·{' '}
-              {source === 'api' ? 'API data' : 'sample data'}
+              Uploaded CSV {reviewSyncFailed ? '· Last review sync failed' : ''}
             </p>
           </div>
-          <Input
-            aria-label="Search transactions"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search card, merchant, country"
-            value={query}
-          />
+          <div className="topbar-actions">
+            <Input
+              aria-label="Search transactions"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search card, merchant, country"
+              value={query}
+            />
+            <button className="text-button" onClick={onReset} type="button">
+              Upload another CSV
+            </button>
+          </div>
         </header>
 
         <Tabs

@@ -1,21 +1,39 @@
+import { useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
-import { useReviewItems } from './hooks/useReviewItems'
+import { UploadCsv } from './components/UploadCsv'
+import { uploadTransactionsCsv, type ReviewDataResult } from './api/review'
 
 function App() {
-  const reviewItems = useReviewItems()
+  const [reviewData, setReviewData] = useState<ReviewDataResult | null>(null)
+  const uploadMutation = useMutation({
+    mutationFn: uploadTransactionsCsv,
+    onSuccess: setReviewData,
+  })
 
-  if (reviewItems.status === 'loading') {
+  const uploadCsv = (file: File) => {
+    uploadMutation.mutate(file)
+  }
+
+  if (!reviewData) {
     return (
-      <div className="loading-screen" role="status">
-        Loading review queue
-      </div>
+      <UploadCsv
+        error={
+          uploadMutation.error instanceof Error
+            ? uploadMutation.error.message
+            : null
+        }
+        isUploading={uploadMutation.isPending}
+        onUpload={uploadCsv}
+      />
     )
   }
 
   return (
     <ReviewQueue
-      items={reviewItems.data.items}
-      source={reviewItems.data.source}
+      fileHash={reviewData.fileHash}
+      items={reviewData.items}
+      onReset={() => setReviewData(null)}
     />
   )
 }
