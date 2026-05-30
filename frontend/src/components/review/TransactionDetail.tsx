@@ -12,6 +12,8 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onSelectTransaction: (transactionId: string) => void
+  reviewableTransactionIds: Set<string>
   transaction: TransactionFlag
 }
 
@@ -20,6 +22,8 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
+  onSelectTransaction,
+  reviewableTransactionIds,
   transaction,
 }: TransactionDetailProps) {
   return (
@@ -108,6 +112,8 @@ export function TransactionDetail({
           analysis={cardAnalysis}
           error={cardAnalysisError}
           isLoading={isCardAnalysisLoading}
+          onSelectTransaction={onSelectTransaction}
+          reviewableTransactionIds={reviewableTransactionIds}
           transactionId={transaction.transactionId}
         />
 

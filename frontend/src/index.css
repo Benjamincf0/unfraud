@@ -573,8 +573,10 @@ button:disabled {
   bottom: 0;
   left: 0;
   min-height: 4px;
+  border: 0;
   border-radius: 3px 3px 0 0;
   background: #777784;
+  padding: 0;
 }
 
 .chart-bar-flagged {
@@ -583,6 +585,25 @@ button:disabled {
 
 .chart-bar-current {
   background: #00ff9f;
+}
+
+.chart-bar-clickable {
+  cursor: pointer;
+}
+
+.chart-bar-clickable:hover {
+  outline: 1px solid #f0f0f0;
+  outline-offset: 1px;
+}
+
+.chart-bar:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.chart-bar:focus-visible {
+  outline: 2px solid #f0f0f0;
+  outline-offset: 2px;
 }
 
 .chart-legend {
@@ -614,6 +635,11 @@ button:disabled {
 
 .legend-swatch-current {
   background: #00ff9f;
+}
+
+.legend-swatch-clickable {
+  border: 1px solid #f0f0f0;
+  background: transparent;
 }
 
 .action-row {

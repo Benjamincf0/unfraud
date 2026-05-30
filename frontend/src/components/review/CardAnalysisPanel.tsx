@@ -5,6 +5,8 @@ type CardAnalysisPanelProps = {
   analysis: CardAnalysis | null
   error: string | null
   isLoading: boolean
+  onSelectTransaction: (transactionId: string) => void
+  reviewableTransactionIds: Set<string>
   transactionId: string
 }
 
@@ -12,6 +14,8 @@ export function CardAnalysisPanel({
   analysis,
   error,
   isLoading,
+  onSelectTransaction,
+  reviewableTransactionIds,
   transactionId,
 }: CardAnalysisPanelProps) {
   if (error) {
@@ -64,6 +68,8 @@ export function CardAnalysisPanel({
 
       <CardHistoryChart
         currentTransactionId={transactionId}
+        onSelectTransaction={onSelectTransaction}
+        reviewableTransactionIds={reviewableTransactionIds}
         transactions={analysis.transactions}
       />
     </section>
@@ -72,9 +78,13 @@ export function CardAnalysisPanel({
 
 function CardHistoryChart({
   currentTransactionId,
+  onSelectTransaction,
+  reviewableTransactionIds,
   transactions,
 }: {
   currentTransactionId: string
+  onSelectTransaction: (transactionId: string) => void
+  reviewableTransactionIds: Set<string>
   transactions: CardTransaction[]
 }) {
   const maxAmount = Math.max(1, ...transactions.map((item) => item.amount))
@@ -105,24 +115,34 @@ function CardHistoryChart({
           <div className="chart-bars">
             {transactions.map((item) => {
               const amountPercent = Math.max(4, (item.amount / maxAmount) * 100)
+              const canOpenTransaction = reviewableTransactionIds.has(
+                item.transactionId,
+              )
 
               return (
                 <div className="chart-column" key={item.transactionId}>
                   <div className="chart-track">
-                    <span
+                    <button
+                      aria-label={`Open ${item.transactionId}`}
                       className={[
                         'chart-bar',
                         item.isFraud ? 'chart-bar-flagged' : '',
                         item.transactionId === currentTransactionId
                           ? 'chart-bar-current'
                           : '',
+                        canOpenTransaction ? 'chart-bar-clickable' : '',
                       ]
                         .filter(Boolean)
                         .join(' ')}
+                      disabled={!canOpenTransaction}
+                      onClick={() => onSelectTransaction(item.transactionId)}
                       style={{ height: `${amountPercent}%` }}
                       title={`${item.transactionId}: ${formatCurrency(
                         item.amount,
-                      )} on ${formatShortDate(item.timestamp)}`}
+                      )} on ${formatShortDate(item.timestamp)}${
+                        canOpenTransaction ? '' : ' · not in review queue'
+                      }`}
+                      type="button"
                     />
                   </div>
                 </div>
@@ -153,6 +173,10 @@ function CardHistoryChart({
         <span>
           <i className="legend-swatch legend-swatch-current" />
           Current transaction
+        </span>
+        <span>
+          <i className="legend-swatch legend-swatch-clickable" />
+          Clickable in review queue
         </span>
       </div>
     </div>

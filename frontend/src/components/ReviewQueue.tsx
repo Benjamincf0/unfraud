@@ -90,6 +90,10 @@ export function ReviewQueue({
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
     visibleTransactions[0]
+  const reviewableTransactionIds = useMemo(
+    () => new Set(transactions.map((transaction) => transaction.transactionId)),
+    [transactions],
+  )
 
   const activeCardAnalysisQuery = useQuery({
     enabled: Boolean(activeTransaction?.cardId),
@@ -174,6 +178,26 @@ export function ReviewQueue({
     setHistory(rest)
     setActiveId(lastAction.transactionId)
   }, [history])
+
+  const selectTransactionFromHistory = useCallback(
+    (transactionId: string) => {
+      const transaction = transactions.find(
+        (item) => item.transactionId === transactionId,
+      )
+
+      if (!transaction) {
+        return
+      }
+
+      setFilter('all')
+      setQuery('')
+      setThreshold((currentThreshold) =>
+        Math.min(currentThreshold, Math.floor(transaction.score * 100)),
+      )
+      setActiveId(transactionId)
+    },
+    [transactions],
+  )
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
@@ -301,7 +325,7 @@ export function ReviewQueue({
             <Slider
               id="review-threshold"
               max={95}
-              min={20}
+              min={0}
               onChange={(event) => setThreshold(Number(event.target.value))}
               value={threshold}
             />
@@ -335,6 +359,8 @@ export function ReviewQueue({
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
+              onSelectTransaction={selectTransactionFromHistory}
+              reviewableTransactionIds={reviewableTransactionIds}
               transaction={activeTransaction}
             />
           ) : (
