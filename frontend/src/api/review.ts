@@ -1,31 +1,46 @@
-import { mockReviewItems } from '../data/mockReviewItems'
 import type { TransactionFlag } from '../types'
 
 export type ReviewDataResult = {
   items: TransactionFlag[]
-  source: 'api' | 'sample'
+  source: 'upload'
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 
-export async function loadReviewItems(): Promise<ReviewDataResult> {
-  try {
-    const response = await fetch(`${apiBaseUrl}/api/review/flags`)
+export async function uploadTransactionsCsv(file: File): Promise<ReviewDataResult> {
+  const formData = new FormData()
+  formData.append('file', file)
 
-    if (!response.ok) {
-      throw new Error(`Review API returned ${response.status}`)
-    }
+  const response = await fetch(`${apiBaseUrl}/api/review/upload`, {
+    body: formData,
+    method: 'POST',
+  })
 
-    const payload = (await response.json()) as unknown
-
-    if (!isTransactionFlagList(payload)) {
-      throw new Error('Review API returned an invalid payload')
-    }
-
-    return { items: payload, source: 'api' }
-  } catch {
-    return { items: mockReviewItems, source: 'sample' }
+  if (!response.ok) {
+    throw new Error(`Upload failed with status ${response.status}`)
   }
+
+  const payload = (await response.json()) as unknown
+  const items = normalizeReviewPayload(payload)
+
+  if (!items) {
+    throw new Error('Upload returned an invalid review payload')
+  }
+
+  return { items, source: 'upload' }
+}
+
+function normalizeReviewPayload(payload: unknown) {
+  if (isTransactionFlagList(payload)) {
+    return payload
+  }
+
+  if (payload && typeof payload === 'object' && 'items' in payload) {
+    const candidate = (payload as { items: unknown }).items
+    return isTransactionFlagList(candidate) ? candidate : null
+  }
+
+  return null
 }
 
 function isTransactionFlagList(payload: unknown): payload is TransactionFlag[] {

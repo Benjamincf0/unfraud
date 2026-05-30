@@ -15,7 +15,7 @@ type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
 type ReviewQueueProps = {
   items: TransactionFlag[]
-  source: 'api' | 'sample'
+  onReset: () => void
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
@@ -26,7 +26,7 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalate' },
 ]
 
-export function ReviewQueue({ items, source }: ReviewQueueProps) {
+export function ReviewQueue({ items, onReset }: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
@@ -218,15 +218,20 @@ export function ReviewQueue({ items, source }: ReviewQueueProps) {
             <h1>Flagged Transactions</h1>
             <p>
               {queueStats.pending} pending of {transactions.length} flagged ·{' '}
-              {source === 'api' ? 'API data' : 'sample data'}
+              Uploaded CSV
             </p>
           </div>
-          <Input
-            aria-label="Search transactions"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search card, merchant, country"
-            value={query}
-          />
+          <div className="topbar-actions">
+            <Input
+              aria-label="Search transactions"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search card, merchant, country"
+              value={query}
+            />
+            <button className="text-button" onClick={onReset} type="button">
+              Upload another CSV
+            </button>
+          </div>
         </header>
 
         <Tabs

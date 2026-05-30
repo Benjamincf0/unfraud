@@ -1,21 +1,45 @@
+import { useState } from 'react'
 import { ReviewQueue } from './components/ReviewQueue'
-import { useReviewItems } from './hooks/useReviewItems'
+import { UploadCsv } from './components/UploadCsv'
+import { uploadTransactionsCsv, type ReviewDataResult } from './api/review'
 
 function App() {
-  const reviewItems = useReviewItems()
+  const [reviewData, setReviewData] = useState<ReviewDataResult | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
-  if (reviewItems.status === 'loading') {
+  const uploadCsv = async (file: File) => {
+    setIsUploading(true)
+    setUploadError(null)
+
+    try {
+      const data = await uploadTransactionsCsv(file)
+      setReviewData(data)
+    } catch (error) {
+      setUploadError(
+        error instanceof Error
+          ? error.message
+          : 'The upload could not be processed',
+      )
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  if (!reviewData) {
     return (
-      <div className="loading-screen" role="status">
-        Loading review queue
-      </div>
+      <UploadCsv
+        error={uploadError}
+        isUploading={isUploading}
+        onUpload={uploadCsv}
+      />
     )
   }
 
   return (
     <ReviewQueue
-      items={reviewItems.data.items}
-      source={reviewItems.data.source}
+      items={reviewData.items}
+      onReset={() => setReviewData(null)}
     />
   )
 }

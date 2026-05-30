@@ -1,6 +1,6 @@
 # Fraud Hunter Frontend
 
-React + Vite reviewer UI for the Fraud Hunter challenge. The frontend focuses on the human review workflow: ranked flags, clear reasons, triage actions, keyboard navigation, undo, search, filtering, audit trail, and cost threshold tuning.
+React + Vite reviewer UI for the Fraud Hunter challenge. The frontend starts with CSV upload, sends the file to the backend detector, then opens a human review workflow for the returned flagged transactions.
 
 ## Run
 
@@ -17,11 +17,13 @@ VITE_API_BASE_URL=http://localhost:8000 npm run dev
 
 ## Backend contract
 
-The app requests flagged transactions from:
+The app uploads the transaction file to:
 
 ```text
-GET /api/review/flags
+POST /api/review/upload
 ```
+
+Request body is multipart form data with a `file` field containing `transactions.csv`.
 
 Expected response shape:
 
@@ -29,7 +31,7 @@ Expected response shape:
 TransactionFlag[]
 ```
 
-See `src/types.ts` for the full contract. If the endpoint is unavailable or returns invalid data, the frontend uses local sample data so the reviewer experience remains demoable.
+The frontend also accepts `{ items: TransactionFlag[] }`. See `src/types.ts` for the full transaction contract.
 
 ## Reviewer controls
 
@@ -42,4 +44,4 @@ See `src/types.ts` for the full contract. If the endpoint is unavailable or retu
 
 ## Frontend scope
 
-The model, detector, CSV ingestion, and updated flagged CSV are owned by the backend/model agents. This frontend keeps the API boundary explicit and avoids duplicating fraud detection logic in the browser.
+The model, detector, CSV parsing, and updated flagged CSV are owned by the backend/model agents. This frontend keeps the API boundary explicit and avoids duplicating fraud detection logic in the browser.
