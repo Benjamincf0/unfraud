@@ -82,6 +82,18 @@ export function ReviewSidebar({
           )}
         </div>
       </div>
+
+      <div className="side-section shortcut-section">
+        <h2>Shortcuts</h2>
+        <div className="shortcut-list">
+          <ShortcutRow keys="J / ↓" label="Next" />
+          <ShortcutRow keys="K / ↑" label="Previous" />
+          <ShortcutRow keys="A" label="Approve" />
+          <ShortcutRow keys="D" label="Dismiss" />
+          <ShortcutRow keys="E" label="Escalate" />
+          <ShortcutRow keys="U" label="Undo" />
+        </div>
+      </div>
     </aside>
   )
 }
@@ -91,6 +103,15 @@ function SummaryRow({ label, value }: { label: string; value: number }) {
     <div className="summary-row">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  )
+}
+
+function ShortcutRow({ keys, label }: { keys: string; label: string }) {
+  return (
+    <div className="shortcut-row">
+      <kbd>{keys}</kbd>
+      <span>{label}</span>
     </div>
   )
 }

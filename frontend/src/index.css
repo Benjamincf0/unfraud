@@ -38,28 +38,93 @@ button:disabled {
   min-height: 100vh;
 }
 
-.loading-screen {
+.upload-page {
   display: grid;
   min-height: 100vh;
   place-items: center;
   background: #0e0e10;
+  padding: 24px;
+}
+
+.upload-card {
+  width: min(100%, 560px);
+}
+
+.upload-card .card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.file-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-height: 132px;
+  justify-content: center;
+  border: 1px dashed #4a4a54;
+  border-radius: 8px;
+  background: #17171b;
   color: #f0f0f0;
-  font-size: 15px;
+  padding: 20px;
+  text-align: left;
+}
+
+.file-drop:hover {
+  border-color: #777784;
+  background: #202026;
+}
+
+.file-drop-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.file-drop-meta,
+.upload-error {
+  color: #a8a8b3;
+  font-size: 14px;
+}
+
+.upload-error {
+  border: 1px solid #6f2e45;
+  border-radius: 8px;
+  background: #24151d;
+  color: #ff9fc7;
+  padding: 10px 12px;
+}
+
+.upload-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .app-shell {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
   background: #0e0e10;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  height: 100vh;
   border-right: 1px solid #2c2c33;
   background: #151518;
+  overflow: auto;
   padding: 24px 18px;
 }
 
@@ -134,6 +199,7 @@ button:disabled {
 }
 
 .side-section label,
+.shortcut-section h2,
 .section-title-row h2,
 .card-header h2,
 .reasons-section h3,
@@ -171,8 +237,42 @@ button:disabled {
   font-size: 13px;
 }
 
+.shortcut-section {
+  margin-top: auto;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  color: #c7c7d1;
+  font-size: 13px;
+}
+
+.shortcut-row kbd {
+  min-width: 52px;
+  border: 1px solid #3b3b44;
+  border-radius: 6px;
+  background: #1c1c21;
+  color: #f0f0f0;
+  padding: 2px 6px;
+  font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .workspace {
   min-width: 0;
+  height: 100vh;
+  overflow: auto;
   padding: 24px;
 }
 
@@ -200,7 +300,13 @@ button:disabled {
   font-size: 14px;
 }
 
-.topbar .input {
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-actions .input {
   width: min(360px, 45vw);
 }
 
@@ -444,6 +550,19 @@ button:disabled {
   background: #e60073;
 }
 
+.text-button {
+  border: 0;
+  background: transparent;
+  color: #c7c7d1;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.text-button:hover {
+  color: #f0f0f0;
+}
+
 .input {
   min-height: 38px;
   border: 1px solid #3b3b44;
@@ -456,6 +575,8 @@ button:disabled {
 
 .input:focus,
 .button:focus-visible,
+.file-drop:focus-visible,
+.text-button:focus-visible,
 .tab-button:focus-visible,
 .queue-item:focus-visible,
 .slider:focus-visible {
@@ -541,11 +662,25 @@ button:disabled {
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
   }
 
   .sidebar {
+    height: auto;
     border-right: 0;
     border-bottom: 1px solid #2c2c33;
+    overflow: visible;
+  }
+
+  .workspace {
+    height: auto;
+    overflow: visible;
+  }
+
+  .shortcut-section {
+    margin-top: 0;
   }
 
   .review-layout {
@@ -567,7 +702,13 @@ button:disabled {
     flex-direction: column;
   }
 
-  .topbar .input {
+  .topbar-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .topbar-actions .input {
     width: 100%;
   }
 
