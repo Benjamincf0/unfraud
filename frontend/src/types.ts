@@ -31,13 +31,6 @@ export type TransactionFlag = {
   }
 }
 
-export type AuditEntry = {
-  id: string
-  transactionId: string
-  decision: Exclude<ReviewDecision, 'pending'>
-  timestamp: string
-}
-
 export type DecisionAction = {
   transactionId: string
   previousDecision: ReviewDecision
