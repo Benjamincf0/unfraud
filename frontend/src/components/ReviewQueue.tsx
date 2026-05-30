@@ -33,6 +33,15 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalated' },
 ]
 
+const shortcutOptions = [
+  { keys: 'J / ↓', label: 'Next' },
+  { keys: 'K / ↑', label: 'Previous' },
+  { keys: 'A', label: 'Approve' },
+  { keys: 'D', label: 'Dismiss' },
+  { keys: 'E', label: 'Escalate' },
+  { keys: 'U', label: 'Undo' },
+]
+
 export function ReviewQueue({
   activeFileHash,
   fileHash,
@@ -288,6 +297,15 @@ export function ReviewQueue({
             />
             <strong>{threshold}%</strong>
           </label>
+        </div>
+
+        <div className="shortcut-strip" aria-label="Keyboard shortcuts">
+          {shortcutOptions.map((shortcut) => (
+            <span className="shortcut-token" key={shortcut.label}>
+              <kbd>{shortcut.keys}</kbd>
+              <span>{shortcut.label}</span>
+            </span>
+          ))}
         </div>
 
         <div className="review-layout">
