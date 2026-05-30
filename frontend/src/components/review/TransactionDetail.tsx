@@ -1,4 +1,3 @@
-import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
@@ -25,15 +24,22 @@ export function TransactionDetail({
             {transaction.transactionId} · {formatDateTime(transaction.timestamp)}
           </p>
         </div>
-        <Badge tone={transaction.label}>{transaction.label}</Badge>
+        <span className="risk-label">{transaction.label}</span>
       </CardHeader>
 
       <CardContent>
         <div className="amount-row">
           <span>{formatCurrency(transaction.amount)}</span>
-          <Badge tone={transaction.decision === 'pending' ? 'neutral' : 'success'}>
-            {transaction.decision}
-          </Badge>
+          <span>{Math.round(transaction.score * 100)} risk</span>
+        </div>
+
+        <div className="visualization-grid" aria-label="Visualization areas">
+          <div className="visualization-slot">
+            <span>Risk graph</span>
+          </div>
+          <div className="visualization-slot">
+            <span>Amount graph</span>
+          </div>
         </div>
 
         <dl className="detail-grid">
@@ -66,7 +72,6 @@ export function TransactionDetail({
         </dl>
 
         <section className="reasons-section">
-          <h3>Reasons</h3>
           <div className="reason-list">
             {transaction.reasons.map((reason) => (
               <div className="reason-row" key={reason.id}>
@@ -81,7 +86,6 @@ export function TransactionDetail({
         </section>
 
         <section className="context-section">
-          <h3>Card Baseline</h3>
           <dl className="detail-grid compact">
             <div>
               <dt>Median amount</dt>
@@ -108,7 +112,7 @@ export function TransactionDetail({
           </Button>
           <Button
             onClick={() => onDecide(transaction.transactionId, 'dismissed')}
-            variant="secondary"
+            variant="outline"
           >
             Dismiss
           </Button>
