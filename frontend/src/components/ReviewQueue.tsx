@@ -338,6 +338,7 @@ export function ReviewQueue({
               onDecide={decide}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
+              transactions={transactions}
               transaction={activeTransaction}
             />
           ) : (

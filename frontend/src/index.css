@@ -535,6 +535,114 @@ button:disabled {
   padding: 12px;
 }
 
+.network-panel {
+  border: 1px solid #2c2c33;
+  border-radius: 8px;
+  background: #121215;
+  padding: 12px;
+}
+
+.network-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 8px;
+  color: #a8a8b3;
+  font-size: 12px;
+}
+
+.network-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.network-card-swatch {
+  background: #00ff9f;
+}
+
+.network-device-swatch {
+  background: #ff0080;
+}
+
+.network-ip-swatch {
+  background: #f59f00;
+}
+
+.network-active-swatch {
+  border: 1px solid #f0f0f0;
+  background: transparent;
+}
+
+.network-frame {
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #0f1117;
+  overflow: auto;
+}
+
+.network-svg {
+  display: block;
+  width: 100%;
+  min-width: 680px;
+  height: auto;
+}
+
+.network-edge {
+  fill: none;
+  stroke: #2f3342;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.network-edge-active {
+  stroke: #f0f0f0;
+  opacity: 1;
+}
+
+.network-node {
+  stroke-width: 1.5;
+}
+
+.network-node-card {
+  fill: #0f2b20;
+  stroke: #00ff9f;
+}
+
+.network-node-device {
+  fill: #2d0f23;
+  stroke: #ff0080;
+}
+
+.network-node-ip {
+  fill: #2d220f;
+  stroke: #f59f00;
+}
+
+.network-node-active {
+  stroke: #f0f0f0;
+  stroke-width: 2.2;
+}
+
+.network-label {
+  fill: #d9dae2;
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.network-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 8px;
+  color: #a8a8b3;
+  font-size: 12px;
+}
+
+.network-summary strong {
+  color: #f0f0f0;
+}
+
 .card-history-chart {
   border: 1px solid #2c2c33;
   border-radius: 8px;
