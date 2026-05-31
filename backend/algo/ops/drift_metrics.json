@@ -3,9 +3,9 @@
   "weekly": [
     {
       "week": "2026-W22",
-      "pr_auc": 0.94537,
+      "pr_auc": 0.943498,
       "n_samples": 26000,
-      "recorded_at": "2026-05-31T00:40:19.196821+00:00"
+      "recorded_at": "2026-05-31T00:46:37.666459+00:00"
     }
   ],
   "last_retrain_week": null
