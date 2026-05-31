@@ -251,18 +251,176 @@ def prepare_matrix(g):
 
 
 # ---------------------------------------------------------------------------
-# 4. Temporal split  (train on the past, test on the future)
+# 4. Temporal split  (train / validation / test — past → future)
+#     Threshold is picked on validation; test is held out for final metrics.
 # ---------------------------------------------------------------------------
-def temporal_split(g, train_frac=0.8):
-    cut = g["timestamp"].quantile(train_frac)
-    train = g[g["timestamp"] <= cut]
-    test = g[g["timestamp"] > cut]
-    print(f"Split at {cut} | train={len(train):,} test={len(test):,}")
+def temporal_split(
+    g: pd.DataFrame,
+    train_frac: float = 0.7,
+    val_frac: float = 0.1,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if train_frac <= 0 or val_frac <= 0 or train_frac + val_frac >= 1.0:
+        raise ValueError("require 0 < train_frac, 0 < val_frac, train_frac + val_frac < 1")
+    cut_val = g["timestamp"].quantile(train_frac)
+    cut_test = g["timestamp"].quantile(train_frac + val_frac)
+    train = g[g["timestamp"] <= cut_val]
+    val = g[(g["timestamp"] > cut_val) & (g["timestamp"] <= cut_test)]
+    test = g[g["timestamp"] > cut_test]
+    test_frac = 1.0 - train_frac - val_frac
+    print(
+        f"Split at {cut_val} / {cut_test} | "
+        f"train={len(train):,} val={len(val):,} test={len(test):,} "
+        f"({train_frac:.0%}/{val_frac:.0%}/{test_frac:.0%})"
+    )
     print(
         f"Fraud rate  train={train.is_fraud.mean():.4%}  "
-        f"test={test.is_fraud.mean():.4%}"
+        f"val={val.is_fraud.mean():.4%}  test={test.is_fraud.mean():.4%}"
     )
-    return train, test
+    return train, val, test
+
+
+# ---------------------------------------------------------------------------
+# 4b. Label-leakage / dataset realism — fraud vs legit describe()
+#     If raw features separate classes cleanly, metrics will look great but
+#     won't generalize; temper expectations before trusting the model.
+# ---------------------------------------------------------------------------
+LEAK_CHECK_FEATURES = [
+    "distance_to_merchant",
+    "amount",
+    "user_age",
+    "city_pop",
+]
+
+# IQR overlap below this + large Cohen's d → "cleanly separated" (easy dataset).
+_SEPARATION_IQR_OVERLAP_MAX = 0.15
+_SEPARATION_COHEN_D_MIN = 1.0
+
+
+def _numeric_by_label(df: pd.DataFrame, feature: str) -> Tuple[pd.Series, pd.Series]:
+    if "is_fraud" not in df.columns:
+        raise ValueError("is_fraud column required for label validation")
+    values = pd.to_numeric(df[feature], errors="coerce")
+    labeled = df.assign(_value=values)
+    legit = labeled.loc[labeled["is_fraud"] == 0, "_value"].dropna()
+    fraud = labeled.loc[labeled["is_fraud"] == 1, "_value"].dropna()
+    return legit, fraud
+
+
+def describe_label_split(df: pd.DataFrame, feature: str) -> None:
+    """Print describe() for legit vs fraud rows of one raw feature."""
+    legit, fraud = _numeric_by_label(df, feature)
+    print(f"\n{feature} - legit (n={len(legit):,}):")
+    print(legit.describe().to_string())
+    print(f"{feature} - fraud (n={len(fraud):,}):")
+    print(fraud.describe().to_string())
+
+
+def _iqr_overlap_ratio(a: pd.Series, b: pd.Series) -> float:
+    q1_a, q3_a = a.quantile(0.25), a.quantile(0.75)
+    q1_b, q3_b = b.quantile(0.25), b.quantile(0.75)
+    overlap = max(0.0, min(q3_a, q3_b) - max(q1_a, q1_b))
+    span = max(q3_a, q3_b) - min(q1_a, q1_b)
+    return float(overlap / span) if span > 0 else 0.0
+
+
+def _cohen_d(a: pd.Series, b: pd.Series) -> float:
+    if len(a) < 2 or len(b) < 2:
+        return 0.0
+    std_a, std_b = a.std(ddof=1), b.std(ddof=1)
+    pooled = np.sqrt((std_a ** 2 + std_b ** 2) / 2)
+    if pooled == 0:
+        return 0.0
+    return float((a.mean() - b.mean()) / pooled)
+
+
+def assess_feature_separation(df: pd.DataFrame, feature: str) -> Dict[str, Any]:
+    """Return separation stats; cleanly_separated flags trivially easy classes."""
+    legit, fraud = _numeric_by_label(df, feature)
+    if legit.empty or fraud.empty:
+        return {
+            "feature": feature,
+            "n_legit": len(legit),
+            "n_fraud": len(fraud),
+            "cohen_d": 0.0,
+            "iqr_overlap": 1.0,
+            "cleanly_separated": False,
+            "note": "missing rows for one class",
+        }
+
+    iqr_overlap = _iqr_overlap_ratio(legit, fraud)
+    cohen_d = _cohen_d(legit, fraud)
+    p10_legit, p90_legit = legit.quantile(0.10), legit.quantile(0.90)
+    p10_fraud, p90_fraud = fraud.quantile(0.10), fraud.quantile(0.90)
+    disjoint_p10_p90 = p90_legit < p10_fraud or p90_fraud < p10_legit
+    cleanly_separated = (
+        disjoint_p10_p90
+        or (iqr_overlap <= _SEPARATION_IQR_OVERLAP_MAX and abs(cohen_d) >= _SEPARATION_COHEN_D_MIN)
+    )
+    return {
+        "feature": feature,
+        "n_legit": len(legit),
+        "n_fraud": len(fraud),
+        "cohen_d": round(cohen_d, 3),
+        "iqr_overlap": round(iqr_overlap, 3),
+        "cleanly_separated": cleanly_separated,
+    }
+
+
+def validate_dataset_labels(
+    df: pd.DataFrame,
+    features: Optional[Sequence[str]] = None,
+    *,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Run fraud vs legit describe() on raw features; warn if the dataset is trivial."""
+    if "is_fraud" not in df.columns:
+        if verbose:
+            print("\nLabel validation skipped: no is_fraud column.")
+        return {"features": {}, "cleanly_separated": [], "dataset_likely_easy": False}
+
+    features = list(features or LEAK_CHECK_FEATURES)
+    present = [f for f in features if f in df.columns]
+    missing = [f for f in features if f not in df.columns]
+
+    if verbose:
+        print("\n--- Label validation (fraud vs legit describe) ---")
+        if missing:
+            print(f"  (skipped missing columns: {', '.join(missing)})")
+
+    results: Dict[str, Dict[str, Any]] = {}
+    separated: List[str] = []
+    for feat in present:
+        if verbose:
+            describe_label_split(df, feat)
+        stats = assess_feature_separation(df, feat)
+        results[feat] = stats
+        if stats["cleanly_separated"]:
+            separated.append(feat)
+
+    if verbose:
+        print("\nSeparation summary (Cohen's d, IQR overlap; * = cleanly separated):")
+        for feat, stats in results.items():
+            flag = " *" if stats["cleanly_separated"] else ""
+            print(
+                f"  {feat:<22} d={stats['cohen_d']:+.3f}  "
+                f"iqr_overlap={stats['iqr_overlap']:.3f}{flag}"
+            )
+        if separated:
+            print(
+                f"\n  WARNING: {', '.join(separated)} separate fraud/legit cleanly - "
+                "the dataset is easy; strong offline metrics may not generalize."
+            )
+        else:
+            print(
+                "\n  Raw features overlap across labels - model signal likely comes "
+                "from engineered features, not trivial splits."
+            )
+
+    return {
+        "features": results,
+        "cleanly_separated": separated,
+        "dataset_likely_easy": bool(separated),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -859,21 +1017,45 @@ class FraudDetectionPipeline:
         self.explainer = None
         self.threshold = 0.5 if model_threshold is None else model_threshold
         self._threshold_from_curve = model_threshold is None
+        self._threshold_tuned_on_val = False
         self.cost_fn = cost_fn
         self.cost_fp = cost_fp
         self.monitor = DriftMonitor(metrics_path)
 
-    def fit(self, path: str, train_frac: float = 0.8) -> "FraudDetectionPipeline":
+    def fit(
+        self,
+        path: str,
+        train_frac: float = 0.7,
+        val_frac: float = 0.1,
+    ) -> "FraudDetectionPipeline":
         df = shrink(load(path))
+        validate_dataset_labels(df)
         g = apply_rule_guardrails(build_features(df))
-        train, test = temporal_split(g)
+        train, val, test = temporal_split(g, train_frac=train_frac, val_frac=val_frac)
         X_tr, y_tr = prepare_matrix(train)
+        X_val, y_val = prepare_matrix(val)
         X_te, y_te = prepare_matrix(test)
         self.model = train_model(X_tr, y_tr)
         self.explainer = build_shap_explainer(self.model, X_tr)
+        self._last_train = train
+        self._last_val = val
         self._last_test = test
+        self._last_X_val = X_val
+        self._last_y_val = y_val
         self._last_X_te = X_te
         self._last_y_te = y_te
+        self._threshold_tuned_on_val = False
+        if self._threshold_from_curve:
+            print("\n--- Validation set (threshold selection) ---")
+            val_scores = self.model.predict_proba(X_val)[:, 1]
+            t, _ = tune_threshold(
+                y_val,
+                val_scores,
+                cost_fn=self.cost_fn,
+                cost_fp=self.cost_fp,
+            )
+            self.threshold = t
+            self._threshold_tuned_on_val = True
         return self
 
     def model_scores(self, X: pd.DataFrame) -> np.ndarray:
@@ -934,24 +1116,24 @@ class FraudDetectionPipeline:
             raise RuntimeError("Nothing to evaluate — fit the pipeline or pass model/X/y")
         cost_fn = self.cost_fn if cost_fn is None else cost_fn
         cost_fp = self.cost_fp if cost_fp is None else cost_fp
-        use_curve_threshold = threshold is None and self._threshold_from_curve
         scores = model.predict_proba(X_te)[:, 1]
         pr_auc = float(average_precision_score(y_te, scores))
+        print("\n--- Test set (held out) ---")
         print(f"\nPR-AUC : {pr_auc:.4f}")
         print(f"ROC-AUC: {roc_auc_score(y_te, scores):.4f}")
         for k in (100, 500, 1000):
             k = min(k, len(y_te))
             print(f"Precision@{k:<5}: {precision_at_k(y_te, scores, k):.4f}")
-        pick = None if use_curve_threshold else (threshold if threshold is not None else self.threshold)
+        t = self.threshold if threshold is None else threshold
+        if self._threshold_tuned_on_val and threshold is None:
+            print(f"\nUsing threshold={t:.4f} (selected on validation; not re-tuned on test)")
         t, _ = tune_threshold(
             y_te,
             scores,
             cost_fn=cost_fn,
             cost_fp=cost_fp,
-            threshold=pick,
+            threshold=t,
         )
-        if use_curve_threshold:
-            self.threshold = t
         pred = (scores >= t).astype(int)
         print("\nConfusion matrix:")
         print(confusion_matrix(y_te, pred))

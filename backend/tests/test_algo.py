@@ -10,6 +10,7 @@ from algo.algo import (
     DriftMonitor,
     FraudDetectionPipeline,
     apply_rule_guardrails,
+    assess_feature_separation,
     build_features,
     format_alert_reason,
     load,
@@ -18,6 +19,8 @@ from algo.algo import (
     train_model,
     build_shap_explainer,
     prepare_matrix,
+    temporal_split,
+    validate_dataset_labels,
 )
 
 
@@ -75,6 +78,46 @@ def _write_sample_csv() -> str:
     path = os.path.join(tempfile.gettempdir(), "unfraud_algo_test.csv")
     _sample_labeled_df().to_csv(path, index=False)
     return path
+
+
+def test_temporal_split_train_val_test():
+    g = _feature_frame()
+    train, val, test = temporal_split(g, train_frac=0.6, val_frac=0.2)
+    assert len(train) + len(val) + len(test) == len(g)
+    assert train["timestamp"].max() <= val["timestamp"].min()
+    assert val["timestamp"].max() <= test["timestamp"].min()
+    assert len(train) > 0 and len(val) > 0 and len(test) > 0
+
+
+def test_pipeline_threshold_picked_on_validation_not_test():
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "train.csv")
+        _sample_labeled_df().to_csv(csv_path, index=False)
+        pipeline = FraudDetectionPipeline()
+        pipeline.fit(csv_path, train_frac=0.6, val_frac=0.2)
+        threshold_after_fit = pipeline.threshold
+        assert pipeline._threshold_tuned_on_val
+        pipeline.evaluate()
+        assert pipeline.threshold == threshold_after_fit
+
+
+def test_validate_dataset_labels():
+    df = _sample_labeled_df()
+    result = validate_dataset_labels(df, verbose=False)
+    assert "amount" in result["features"]
+    assert result["features"]["amount"]["n_fraud"] >= 1
+    assert result["features"]["amount"]["n_legit"] >= 1
+
+
+def test_assess_feature_separation_disjoint():
+    df = pd.DataFrame(
+        {
+            "is_fraud": [0, 0, 0, 1, 1, 1],
+            "amount": [1.0, 2.0, 3.0, 100.0, 110.0, 120.0],
+        }
+    )
+    stats = assess_feature_separation(df, "amount")
+    assert stats["cleanly_separated"]
 
 
 def test_rule_guardrails_trigger_on_anomaly():
