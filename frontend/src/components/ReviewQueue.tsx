@@ -170,34 +170,45 @@ function AuditLog({
   entries,
   error,
   isLoading,
+  onClose,
   onSelectTransaction,
   reviewableTransactionIds,
 }: {
   entries: ReviewLogEntry[]
   error: string | null
   isLoading: boolean
+  onClose: () => void
   onSelectTransaction: (transactionId: string) => void
   reviewableTransactionIds: Set<string>
 }) {
-  const visibleEntries = entries.slice(0, 8)
-
   return (
-    <section className="audit-log" aria-label="Review audit log">
+    <aside className="audit-log" aria-label="Review audit log">
       <div className="audit-log-header">
-        <strong>Audit log</strong>
-        <span>
-          {error
-            ? 'Could not load'
-            : isLoading
-            ? 'Refreshing'
-            : `${entries.length} decisions`}
-        </span>
+        <div>
+          <strong>Audit log</strong>
+          <span>
+            {error
+              ? 'Could not load'
+              : isLoading
+              ? 'Refreshing'
+              : `${entries.length} decisions`}
+          </span>
+        </div>
+        <Button
+          aria-label="Close audit log"
+          onClick={onClose}
+          size="icon"
+          title="Close audit log"
+          variant="ghost"
+        >
+          ×
+        </Button>
       </div>
       <div className="audit-log-list">
-        {visibleEntries.length === 0 ? (
+        {entries.length === 0 ? (
           <span className="audit-log-empty">No review decisions yet.</span>
         ) : (
-          visibleEntries.map((entry) => {
+          entries.map((entry) => {
             const canSelect = reviewableTransactionIds.has(entry.transactionId)
 
             return (
@@ -218,7 +229,7 @@ function AuditLog({
           })
         )}
       </div>
-    </section>
+    </aside>
   )
 }
 
@@ -262,6 +273,7 @@ export function ReviewQueue({
     'merchant_name',
   ])
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
   const [history, setHistory] = useState<DecisionAction[]>([])
   const [networkFocus, setNetworkFocus] = useState<{
     label: string
@@ -709,6 +721,15 @@ export function ReviewQueue({
             >
               ↶
             </Button>
+            <Button
+              aria-expanded={auditOpen}
+              aria-label="Toggle audit log"
+              onClick={() => setAuditOpen((open) => !open)}
+              size="sm"
+              variant="outline"
+            >
+              Audit Log
+            </Button>
             {networkFocus ? (
               <Button
                 onClick={() => setNetworkFocus(null)}
@@ -781,19 +802,11 @@ export function ReviewQueue({
           ) : null}
         </div>
 
-        <AuditLog
-          entries={reviewLogQuery.data ?? []}
-          error={
-            reviewLogQuery.error instanceof Error
-              ? reviewLogQuery.error.message
-              : null
+        <div
+          className={
+            auditOpen ? 'review-layout review-layout-with-audit' : 'review-layout'
           }
-          isLoading={reviewLogQuery.isFetching}
-          onSelectTransaction={setActiveId}
-          reviewableTransactionIds={reviewableTransactionIds}
-        />
-
-        <div className="review-layout">
+        >
           <QueueList
             activeTransactionId={activeTransaction?.transactionId}
             matchFieldsByTransactionId={matchFieldsByTransactionId}
@@ -821,6 +834,21 @@ export function ReviewQueue({
           ) : (
             <EmptyTransactionDetail />
           )}
+
+          {auditOpen ? (
+            <AuditLog
+              entries={reviewLogQuery.data ?? []}
+              error={
+                reviewLogQuery.error instanceof Error
+                  ? reviewLogQuery.error.message
+                  : null
+              }
+              isLoading={reviewLogQuery.isFetching}
+              onClose={() => setAuditOpen(false)}
+              onSelectTransaction={setActiveId}
+              reviewableTransactionIds={reviewableTransactionIds}
+            />
+          ) : null}
         </div>
       </main>
     </div>
