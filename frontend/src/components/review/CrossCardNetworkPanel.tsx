@@ -3,6 +3,10 @@ import type { TransactionFlag } from '../../types'
 
 type CrossCardNetworkPanelProps = {
   activeTransaction: TransactionFlag
+  onFocusRelatedTransactions: (payload: {
+    label: string
+    transactionIds: string[]
+  }) => void
   transactions: TransactionFlag[]
 }
 
@@ -30,6 +34,7 @@ const HEIGHT = 280
 
 export function CrossCardNetworkPanel({
   activeTransaction,
+  onFocusRelatedTransactions,
   transactions,
 }: CrossCardNetworkPanelProps) {
   const model = useMemo(
@@ -91,7 +96,28 @@ export function CrossCardNetworkPanel({
           })}
 
           {model.nodes.map((node) => (
-            <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+            <g
+              className="network-node-group"
+              key={node.id}
+              onClick={() =>
+                onFocusRelatedTransactions({
+                  label: `${node.type}: ${node.key}`,
+                  transactionIds: model.nodeTransactionIds.get(node.id) ?? [],
+                })
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onFocusRelatedTransactions({
+                    label: `${node.type}: ${node.key}`,
+                    transactionIds: model.nodeTransactionIds.get(node.id) ?? [],
+                  })
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              transform={`translate(${node.x}, ${node.y})`}
+            >
               <circle
                 className={[
                   'network-node',
@@ -193,11 +219,20 @@ function buildNetworkModel(
 
   const edgeWeights = new Map<string, number>()
   const activeEdgeIds = new Set<string>()
+  const nodeTransactionIds = new Map<string, Set<string>>()
+
+  const linkNode = (nodeId: string, transactionId: string) => {
+    const current = nodeTransactionIds.get(nodeId) ?? new Set<string>()
+    current.add(transactionId)
+    nodeTransactionIds.set(nodeId, current)
+  }
 
   for (const tx of related) {
     const cardId = `card:${tx.cardId}`
+    linkNode(cardId, tx.transactionId)
     if (tx.deviceId && deviceCounts.has(tx.deviceId)) {
       const deviceId = `device:${tx.deviceId}`
+      linkNode(deviceId, tx.transactionId)
       const edgeId = `${cardId}->${deviceId}`
       edgeWeights.set(edgeId, (edgeWeights.get(edgeId) ?? 0) + 1)
 
@@ -207,6 +242,7 @@ function buildNetworkModel(
 
       if (tx.ipAddress && ipCounts.has(tx.ipAddress)) {
         const ipId = `ip:${tx.ipAddress}`
+        linkNode(ipId, tx.transactionId)
         const edgeTwoId = `${deviceId}->${ipId}`
         edgeWeights.set(edgeTwoId, (edgeWeights.get(edgeTwoId) ?? 0) + 1)
 
@@ -216,6 +252,7 @@ function buildNetworkModel(
       }
     } else if (tx.ipAddress && ipCounts.has(tx.ipAddress)) {
       const ipId = `ip:${tx.ipAddress}`
+      linkNode(ipId, tx.transactionId)
       const edgeId = `${cardId}->${ipId}`
       edgeWeights.set(edgeId, (edgeWeights.get(edgeId) ?? 0) + 1)
 
@@ -241,6 +278,12 @@ function buildNetworkModel(
   return {
     edges,
     nodeById,
+    nodeTransactionIds: new Map(
+      Array.from(nodeTransactionIds.entries()).map(([key, value]) => [
+        key,
+        Array.from(value),
+      ]),
+    ),
     nodes,
     relatedCardCount: cardKeys.length,
     sharedDeviceCount: deviceKeys.length,

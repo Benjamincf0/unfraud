@@ -630,6 +630,15 @@ button:disabled {
   text-anchor: middle;
 }
 
+.network-node-group {
+  cursor: pointer;
+}
+
+.network-node-group:focus-visible .network-node {
+  stroke: #f0f0f0;
+  stroke-width: 2.6;
+}
+
 .network-summary {
   display: flex;
   flex-wrap: wrap;

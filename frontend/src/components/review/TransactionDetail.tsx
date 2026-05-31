@@ -13,6 +13,10 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onFocusRelatedTransactions: (payload: {
+    label: string
+    transactionIds: string[]
+  }) => void
   onSelectTransaction: (transactionId: string) => void
   reviewableTransactionIds: Set<string>
   transactions: TransactionFlag[]
@@ -24,6 +28,7 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
+  onFocusRelatedTransactions,
   onSelectTransaction,
   reviewableTransactionIds,
   transactions,
@@ -128,6 +133,7 @@ export function TransactionDetail({
         />
         <CrossCardNetworkPanel
           activeTransaction={transaction}
+          onFocusRelatedTransactions={onFocusRelatedTransactions}
           transactions={transactions}
         />
 

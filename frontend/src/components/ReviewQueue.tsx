@@ -50,6 +50,10 @@ export function ReviewQueue({
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
   const [history, setHistory] = useState<DecisionAction[]>([])
+  const [networkFocus, setNetworkFocus] = useState<{
+    label: string
+    transactionIds: Set<string>
+  } | null>(null)
   const {
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
@@ -63,6 +67,9 @@ export function ReviewQueue({
     return transactions.filter((transaction) => {
       const filterPasses =
         filter === 'all' ? true : transaction.decision === filter
+      const networkPasses = networkFocus
+        ? networkFocus.transactionIds.has(transaction.transactionId)
+        : true
       const queryPasses = normalizedQuery
         ? [
             transaction.transactionId,
@@ -76,9 +83,9 @@ export function ReviewQueue({
             .includes(normalizedQuery)
         : true
 
-      return filterPasses && queryPasses
+      return filterPasses && networkPasses && queryPasses
     })
-  }, [filter, query, transactions])
+  }, [filter, networkFocus, query, transactions])
 
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
@@ -116,8 +123,28 @@ export function ReviewQueue({
     setTransactions(items)
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
+    setNetworkFocus(null)
     setHistory([])
   }, [fileHash, items])
+
+  const focusRelatedTransactions = useCallback(
+    ({ label, transactionIds }: { label: string; transactionIds: string[] }) => {
+      if (transactionIds.length === 0) {
+        return
+      }
+
+      const ids = new Set(transactionIds)
+      const firstVisible = transactions.find((tx) => ids.has(tx.transactionId))
+
+      setFilter('all')
+      setQuery('')
+      setNetworkFocus({ label, transactionIds: ids })
+      if (firstVisible) {
+        setActiveId(firstVisible.transactionId)
+      }
+    },
+    [transactions],
+  )
 
   const decide = useCallback(
     (
@@ -264,6 +291,7 @@ export function ReviewQueue({
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
             <span>{transactions.length} in queue</span>
+            {networkFocus ? <span>network: {networkFocus.label}</span> : null}
             {reviewSyncFailed ? <span>Sync failed</span> : null}
           </div>
           <div className="topbar-actions">
@@ -295,6 +323,15 @@ export function ReviewQueue({
             >
               Undo
             </Button>
+            {networkFocus ? (
+              <Button
+                onClick={() => setNetworkFocus(null)}
+                size="sm"
+                variant="outline"
+              >
+                Clear Network Filter
+              </Button>
+            ) : null}
             <Button onClick={onReset} size="sm" variant="outline">
               Upload CSV
             </Button>
@@ -336,6 +373,7 @@ export function ReviewQueue({
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
+              onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
               transactions={transactions}
