@@ -1,7 +1,9 @@
 import type {
+  FlaggedQueueStats,
   ReviewSummary,
   ReviewSessionData,
 } from '../lib/scoringViews'
+import { emptyFlaggedQueueStats } from '../lib/scoringViews'
 import { QUEUE_BOOTSTRAP_LIMIT } from '../lib/scoringViews'
 import type {
   CardAnalysis,
@@ -18,11 +20,20 @@ type BackendUploadResponse = {
   message: string
 }
 
+type BackendFlaggedQueueStats = {
+  pending: number
+  approved: number
+  dismissed: number
+  escalated: number
+}
+
 type BackendSummaryResponse = {
   total_transactions: number
   flagged_count: number
   model_flagged_count?: number
   ml_model_available: boolean
+  flagged_queue_stats?: BackendFlaggedQueueStats
+  model_flagged_queue_stats?: BackendFlaggedQueueStats
 }
 
 type BackendQueuePageResponse = {
@@ -187,6 +198,14 @@ export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummar
     flaggedCount: payload.flagged_count,
     modelFlaggedCount: payload.model_flagged_count ?? 0,
     mlModelAvailable: payload.ml_model_available,
+    flaggedQueueStats: mapFlaggedQueueStats(
+      payload.flagged_queue_stats,
+      payload.flagged_count,
+    ),
+    modelFlaggedQueueStats: mapFlaggedQueueStats(
+      payload.model_flagged_queue_stats,
+      payload.model_flagged_count ?? 0,
+    ),
   }
 }
 
@@ -793,6 +812,25 @@ function normalizeChannel(channel: string): BackendQueueItem['channel'] {
 
 function emptyToUndefined(value: string | undefined) {
   return value && value.trim() !== '' ? value : undefined
+}
+
+function mapFlaggedQueueStats(
+  stats: BackendFlaggedQueueStats | undefined,
+  flaggedCount: number,
+): FlaggedQueueStats {
+  if (!stats) {
+    return {
+      ...emptyFlaggedQueueStats,
+      pending: flaggedCount,
+    }
+  }
+
+  return {
+    pending: stats.pending,
+    approved: stats.approved,
+    dismissed: stats.dismissed,
+    escalated: stats.escalated,
+  }
 }
 
 function parseReviewDecision(value: string): ReviewDecision {

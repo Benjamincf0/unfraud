@@ -140,6 +140,14 @@ tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,
     assert summary["flagged_count"] >= 1
     assert "model_flagged_count" in summary
     assert "ml_model_available" in summary
+    assert summary["flagged_queue_stats"]["pending"] >= 1
+    assert (
+        summary["flagged_queue_stats"]["pending"]
+        + summary["flagged_queue_stats"]["approved"]
+        + summary["flagged_queue_stats"]["dismissed"]
+        + summary["flagged_queue_stats"]["escalated"]
+        == summary["flagged_count"]
+    )
 
     response = client.get(f"/analysis/queue/{file_hash}?limit=2")
     assert response.status_code == 200

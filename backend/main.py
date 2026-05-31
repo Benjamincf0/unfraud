@@ -77,11 +77,20 @@ class ReviewLogEntry(BaseModel):
     reviewed_at: str
 
 
+class FlaggedQueueStats(BaseModel):
+    pending: int
+    approved: int
+    dismissed: int
+    escalated: int
+
+
 class AnalysisSummaryResponse(BaseModel):
     total_transactions: int
     flagged_count: int
     model_flagged_count: int = 0
     ml_model_available: bool
+    flagged_queue_stats: FlaggedQueueStats
+    model_flagged_queue_stats: FlaggedQueueStats
 
 
 class QueueTransactionItem(TransactionBase):
@@ -292,6 +301,26 @@ def _optional_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _normalize_review_decision(value: Any) -> str:
+    decision = str(value or "").strip().lower()
+    if decision in {"approve", "approved"}:
+        return "approved"
+    if decision in {"dismiss", "dismissed"}:
+        return "dismissed"
+    if decision in {"escalate", "escalated"}:
+        return "escalated"
+    return "pending"
+
+
+def _flagged_queue_stats(file_hash: str, use_model: bool = False) -> FlaggedQueueStats:
+    queue_df = _queue_dataframe(file_hash, use_model=use_model, flagged_only=True)
+    normalized = queue_df["review_decision"].map(_normalize_review_decision)
+    counts = {"pending": 0, "approved": 0, "dismissed": 0, "escalated": 0}
+    for decision in normalized:
+        counts[decision] = counts.get(decision, 0) + 1
+    return FlaggedQueueStats(**counts)
+
+
 def _queue_dataframe(
     file_hash: str,
     use_model: bool = False,
@@ -415,11 +444,24 @@ async def get_analysis_summary(file_hash: str):
             (model_df["is_fraud"] | (model_df["fraud_score"] > 0)).sum()
         )
 
+    model_flagged_queue_stats = (
+        _flagged_queue_stats(file_hash, use_model=True)
+        if is_model_available()
+        else FlaggedQueueStats(
+            pending=0,
+            approved=0,
+            dismissed=0,
+            escalated=0,
+        )
+    )
+
     return AnalysisSummaryResponse(
         total_transactions=len(uploaded_files[file_hash]),
         flagged_count=flagged_count,
         model_flagged_count=model_flagged_count,
         ml_model_available=is_model_available(),
+        flagged_queue_stats=_flagged_queue_stats(file_hash, use_model=False),
+        model_flagged_queue_stats=model_flagged_queue_stats,
     )
 
 

@@ -23,6 +23,7 @@ import {
   fetchReviewBootstrap,
   fetchReviewLog,
   fetchReviewQueuePage,
+  fetchReviewSummary,
   fetchTransactionDetail,
   submitReviewDecision,
 } from "../api/review";
@@ -332,8 +333,13 @@ export function ReviewQueue({
   sessions,
 }: ReviewQueueProps) {
   const fileHash = session.fileHash;
-  const { summary } = session;
   const queryClient = useQueryClient();
+  const summaryQuery = useQuery({
+    queryFn: () => fetchReviewSummary(fileHash),
+    queryKey: ["review-summary", fileHash],
+    initialData: session.summary,
+  });
+  const summary = summaryQuery.data ?? session.summary;
   const [useModel, setUseModel] = useState(false);
   const [sortMode, setSortMode] = useState<RiskSortMode>("active");
   const [riskTuningByMode, setRiskTuningByMode] =
@@ -410,6 +416,7 @@ export function ReviewQueue({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["review-log", fileHash] });
+      queryClient.invalidateQueries({ queryKey: ["review-summary", fileHash] });
     },
   });
   const reviewLogQuery = useQuery({
@@ -731,6 +738,9 @@ export function ReviewQueue({
   const activeFlaggedCount = useModel
     ? summary.modelFlaggedCount
     : summary.flaggedCount;
+  const activeQueueStats = useModel
+    ? summary.modelFlaggedQueueStats
+    : summary.flaggedQueueStats;
 
   const transactions = useMemo(
     () =>
@@ -899,37 +909,29 @@ export function ReviewQueue({
     queryKey: ["card-analysis", fileHash, activeTransaction?.cardId, useModel],
   });
 
-  const queueStats = useMemo(() => {
-    return transactions.reduce(
-      (stats, transaction) => {
-        stats[transaction.decision] += 1;
-        return stats;
-      },
-      { approved: 0, dismissed: 0, escalated: 0, pending: 0 } as Record<
-        ReviewDecision,
-        number
-      >,
-    );
-  }, [transactions]);
-
   const queueFilterOptions = useMemo(
     () =>
       filterOptions.map((option) => {
         const count =
-          option.value === "all" ? transactions.length : queueStats[option.value];
+          option.value === "all"
+            ? activeFlaggedCount
+            : activeQueueStats[option.value];
 
         return {
           ...option,
           label: `${option.label} (${count})`,
         };
       }),
-    [queueStats, transactions.length],
+    [activeFlaggedCount, activeQueueStats],
   );
 
   const totalScoredCount = summary.totalTransactions;
   const queuedCount = activeFlaggedCount;
   const notQueuedCount = Math.max(0, totalScoredCount - queuedCount);
-  const reviewedCount = transactions.length - queueStats.pending;
+  const reviewedCount =
+    activeQueueStats.approved +
+    activeQueueStats.dismissed +
+    activeQueueStats.escalated;
   const scorerLabel = useModel ? "ML model" : "Heuristic";
   const loadedScorerCount = useModel ? loadedModelCount : loadedHeuristicCount;
   const hasMoreFlagged = loadedScorerCount < activeFlaggedCount;
@@ -950,7 +952,11 @@ export function ReviewQueue({
     }
 
     if (reviewedCount > 0) {
-      return `${queueStats.pending.toLocaleString()} still to review · ${(transactions.length - queueStats.pending).toLocaleString()} reviewed`;
+      const reviewedTotal =
+        activeQueueStats.approved +
+        activeQueueStats.dismissed +
+        activeQueueStats.escalated;
+      return `${activeQueueStats.pending.toLocaleString()} still to review · ${reviewedTotal.toLocaleString()} reviewed`;
     }
 
     if (notQueuedCount > 0) {
@@ -965,7 +971,7 @@ export function ReviewQueue({
     loadedFlaggedCount,
     networkFocus,
     notQueuedCount,
-    queueStats.pending,
+    activeQueueStats,
     query,
     reviewedCount,
     scorerLabel,

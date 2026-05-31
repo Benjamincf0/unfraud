@@ -2,11 +2,27 @@ import type { ReviewDecision, TransactionFlag } from '../types'
 
 export type RiskSortMode = 'active' | 'heuristic' | 'model'
 
+export type FlaggedQueueStats = {
+  pending: number
+  approved: number
+  dismissed: number
+  escalated: number
+}
+
+export const emptyFlaggedQueueStats: FlaggedQueueStats = {
+  pending: 0,
+  approved: 0,
+  dismissed: 0,
+  escalated: 0,
+}
+
 export type ReviewSummary = {
   totalTransactions: number
   flaggedCount: number
   modelFlaggedCount: number
   mlModelAvailable: boolean
+  flaggedQueueStats: FlaggedQueueStats
+  modelFlaggedQueueStats: FlaggedQueueStats
 }
 
 export type ReviewSessionData = {
