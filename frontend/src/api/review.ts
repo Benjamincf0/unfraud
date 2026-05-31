@@ -1,5 +1,6 @@
 import type {
   CardAnalysis,
+  ReviewLogEntry,
   ReviewDecision,
   RiskReason,
   TransactionFlag,
@@ -70,6 +71,13 @@ type BackendAnalyzedTransaction = CsvTransaction & {
   is_fraud: boolean
   reasons?: string[]
   score_breakdown?: BackendRiskSignal[]
+}
+
+type BackendReviewLogEntry = {
+  transaction_id: string
+  action: 'approve' | 'dismiss' | 'escalate'
+  reviewer_notes?: string | null
+  reviewed_at: string
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -159,6 +167,30 @@ export async function submitReviewDecision({
   }
 
   return response.json()
+}
+
+export async function fetchReviewLog(
+  fileHash: string,
+): Promise<ReviewLogEntry[]> {
+  const response = await fetch(`${apiBaseUrl}/review-log/${fileHash}`)
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Review log failed'))
+  }
+
+  const payload = (await response.json()) as BackendReviewLogEntry[]
+  if (!Array.isArray(payload)) {
+    throw new Error('Review log returned an invalid response')
+  }
+
+  return payload
+    .filter((item) => item && item.transaction_id && item.action)
+    .map((item) => ({
+      transactionId: item.transaction_id,
+      action: backendActionToDecision(item.action),
+      reviewerNotes: item.reviewer_notes ?? undefined,
+      reviewedAt: item.reviewed_at,
+    }))
 }
 
 export async function fetchCardAnalysis({
@@ -588,10 +620,23 @@ function toTransactionFlag(
     reasons: buildReasons(analysis),
     reviewedAt,
     reviewerNotes,
+    isFraud: analysis.is_fraud,
     score: analysis.fraud_score,
     timestamp: transaction.timestamp,
     transactionId: transaction.transaction_id,
   }
+}
+
+function backendActionToDecision(
+  action: BackendReviewLogEntry['action'],
+): Exclude<ReviewDecision, 'pending'> {
+  if (action === 'approve') {
+    return 'approved'
+  }
+  if (action === 'dismiss') {
+    return 'dismissed'
+  }
+  return 'escalated'
 }
 
 function buildCardContext(transactions: CsvTransaction[]) {

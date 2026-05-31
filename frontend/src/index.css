@@ -189,11 +189,164 @@ button:disabled {
 
 .review-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 230px 230px auto;
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 8px;
   align-items: center;
   border-bottom: 1px solid #2c2c33;
   margin-bottom: 10px;
+}
+
+.insights-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.insight-card {
+  border: 1px solid #2c2c33;
+  border-radius: 8px;
+  background: #16161a;
+  padding: 12px;
+}
+
+.insight-title {
+  margin: 0 0 10px;
+  color: #f0f0f0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.funnel-list,
+.audit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.funnel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.funnel-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #a8a8b3;
+  font-size: 13px;
+}
+
+.funnel-list strong {
+  color: #f0f0f0;
+  font-size: 13px;
+}
+
+.reason-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reason-bar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.reason-bar-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #a8a8b3;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.reason-bar-labels strong {
+  color: #f0f0f0;
+}
+
+.reason-bar-track {
+  width: 100%;
+  height: 8px;
+  border: 1px solid #2c2c33;
+  border-radius: 4px;
+  background: #121215;
+  overflow: hidden;
+}
+
+.reason-bar-track span {
+  display: block;
+  height: 100%;
+  background: #00ff9f;
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audit-entry {
+  display: flex;
+  width: 100%;
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #121215;
+  color: #f0f0f0;
+  padding: 8px 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+
+.audit-entry span {
+  display: block;
+}
+
+.audit-entry > span:first-child {
+  min-width: 0;
+}
+
+.audit-entry > span:first-child span {
+  color: #a8a8b3;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-entry > span:last-child {
+  color: #a8a8b3;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.audit-entry:hover {
+  background: #1b1b21;
+}
+
+.cost-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.cost-recommendation {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #a8a8b3;
+  font-size: 13px;
+}
+
+.cost-recommendation strong {
+  color: #f0f0f0;
 }
 
 .threshold-control {
@@ -485,6 +638,88 @@ button:disabled {
   font-size: 18px;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.geo-usage-panel {
+  border: 1px solid #2c2c33;
+  border-radius: 8px;
+  background: #121215;
+  padding: 12px;
+}
+
+.geo-usage-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 10px;
+}
+
+.geo-map-frame {
+  border: 1px solid #2c2c33;
+  border-radius: 6px;
+  background: #101014;
+  overflow: hidden;
+}
+
+.geo-map {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 1;
+}
+
+.geo-sea {
+  fill: #0f1117;
+}
+
+.geo-grid line {
+  stroke: #272933;
+  stroke-width: 1;
+}
+
+.geo-heat-dot {
+  fill: #ff0080;
+}
+
+.geo-heat-center {
+  fill: #00ff9f;
+}
+
+.geo-country-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.geo-country-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.geo-country-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #a8a8b3;
+  font-size: 12px;
+}
+
+.geo-country-labels strong {
+  color: #f0f0f0;
+}
+
+.geo-country-track {
+  border: 1px solid #2c2c33;
+  border-radius: 4px;
+  background: #0e0e12;
+  height: 7px;
+  overflow: hidden;
+}
+
+.geo-country-track span {
+  display: block;
+  height: 100%;
+  background: #ff0080;
 }
 
 .card-history-chart {
@@ -920,16 +1155,24 @@ button:disabled {
     overflow: visible;
   }
 
+  .insights-grid {
+    grid-template-columns: 1fr;
+  }
+
   .review-controls {
     grid-template-columns: 1fr;
     gap: 8px;
   }
 
-  .audit-log {
+  .cost-controls {
     grid-template-columns: 1fr;
   }
 
   .review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .geo-usage-layout {
     grid-template-columns: 1fr;
   }
 

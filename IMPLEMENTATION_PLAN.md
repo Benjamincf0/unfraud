@@ -4,7 +4,7 @@
 
 - Backend: FastAPI with pandas-based feature engineering and scoring.
 - Frontend: React + Vite with local queue state and backend review sync.
-- Data handoff: CSV upload to `/upload`, analysis from `/analysis/all/{file_hash}`, decisions through `/review/{file_hash}/{transaction_id}/{action}`, and CSV export from `/export/{file_hash}`.
+- Data handoff: CSV upload to `/upload`, analysis from `/analysis/all/{file_hash}`, decisions through `/review/{file_hash}/{transaction_id}/{action}`, audit from `/review-log/{file_hash}`, and CSV export from `/export/{file_hash}`.
 
 ## Detection Pipeline
 
@@ -20,7 +20,7 @@
 - Upload screen sends the CSV to the backend and joins analysis results with original rows.
 - Queue view shows ranked candidates one at a time with a compact list for navigation.
 - Keyboard shortcuts support next, previous, approve, dismiss, escalate, and undo.
-- False-positive and missed-fraud cost sliders derive the visible risk cutoff.
+- Threshold and false-positive/missed-fraud cost sliders tune the visible queue.
 - Session audit log records review actions and lets reviewers reopen recent decisions.
 
 ## Work Division
