@@ -484,7 +484,7 @@ export function ReviewQueue({
                 value={query}
               />
               <label className="search-control compact" htmlFor="search-mode-select">
-                <span>Scope</span>
+                <span className="visually-hidden">Scope</span>
                 <select
                   className="search-select"
                   id="search-mode-select"
@@ -499,7 +499,7 @@ export function ReviewQueue({
 
               {searchMode === 'single' ? (
                 <label className="search-control compact" htmlFor="single-column-select">
-                  <span>Column</span>
+                  <span className="visually-hidden">Column</span>
                   <select
                     className="search-select"
                     id="single-column-select"
@@ -519,13 +519,15 @@ export function ReviewQueue({
             </div>
             <div className="shortcut-menu-wrap">
               <Button
+                aria-label="Show keyboard shortcuts"
                 aria-expanded={shortcutsOpen}
                 aria-haspopup="true"
                 onClick={() => setShortcutsOpen((open) => !open)}
-                size="sm"
+                size="icon"
+                title="Shortcuts"
                 variant="outline"
               >
-                Shortcuts
+                ?
               </Button>
               {shortcutsOpen ? (
                 <div className="shortcut-menu" role="menu">
@@ -539,12 +541,14 @@ export function ReviewQueue({
               ) : null}
             </div>
             <Button
+              aria-label="Undo last decision"
               disabled={history.length === 0}
               onClick={undo}
-              size="sm"
+              size="icon"
+              title="Undo"
               variant="outline"
             >
-              Undo
+              ↶
             </Button>
             {networkFocus ? (
               <Button
