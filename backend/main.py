@@ -26,6 +26,62 @@ analysis_cache: Dict[str, pd.DataFrame] = {}
 review_log: Dict[str, Dict[str, Any]] = {}
 
 REVIEW_ESCALATED_IP_RISK = 0.22
+HEURISTIC_FEEDBACK_MIN_MULTIPLIER = 0.35
+HEURISTIC_FEEDBACK_MAX_MULTIPLIER = 1.8
+HEURISTIC_FEEDBACK_SIGNAL_CODES = {
+    "amount_outlier",
+    "category_amount",
+    "category_shift",
+    "device_shift",
+    "ip_shift",
+    "geo_shift",
+    "device_reuse_cross_card",
+    "ip_reuse_cross_card",
+    "merchant_burst_cross_card",
+}
+HEURISTIC_FEEDBACK_ACTION_FACTORS = {
+    "approve": 1.08,
+    "dismiss": 0.85,
+    "escalate": 1.18,
+}
+
+
+def _clean_feedback_reason_codes(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    cleaned: List[str] = []
+    for value in values:
+        code = str(value or "").strip()
+        if code in HEURISTIC_FEEDBACK_SIGNAL_CODES and code not in cleaned:
+            cleaned.append(code)
+    return cleaned
+
+
+def _heuristic_weight_multipliers(file_hash: str) -> Dict[str, float]:
+    multipliers = {code: 1.0 for code in HEURISTIC_FEEDBACK_SIGNAL_CODES}
+
+    for record in review_log.get(file_hash, {}).values():
+        action = str(record.get("action", "")).strip().lower()
+        factor = HEURISTIC_FEEDBACK_ACTION_FACTORS.get(action)
+        if factor is None:
+            continue
+
+        for code in _clean_feedback_reason_codes(
+            record.get("feedback_reason_codes", [])
+        ):
+            multipliers[code] = min(
+                HEURISTIC_FEEDBACK_MAX_MULTIPLIER,
+                max(
+                    HEURISTIC_FEEDBACK_MIN_MULTIPLIER,
+                    multipliers[code] * factor,
+                ),
+            )
+
+    return {
+        code: round(multiplier, 4)
+        for code, multiplier in sorted(multipliers.items())
+        if abs(multiplier - 1.0) > 0.0001
+    }
 
 # Pydantic models
 class UploadResponse(BaseModel):
@@ -71,11 +127,15 @@ class AnalyzedTransaction(TransactionBase):
 class ReviewAction(BaseModel):
     action: str  # approve, dismiss, escalate, pending
     reviewer_notes: Optional[str] = None
+    feedback_reason_codes: List[str] = Field(default_factory=list)
+    feedback_reasoning: Optional[str] = None
 
 class ReviewLogEntry(BaseModel):
     transaction_id: str
     action: str
     reviewer_notes: Optional[str] = None
+    feedback_reason_codes: List[str] = Field(default_factory=list)
+    feedback_reasoning: Optional[str] = None
     reviewed_at: str
 
 
@@ -149,6 +209,13 @@ def scoring_status():
 
 
 def _analysis_cache_key(file_hash: str, use_model: bool) -> str:
+    if not use_model:
+        tuning_signature = json.dumps(
+            _heuristic_weight_multipliers(file_hash),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"{file_hash}:heuristic:{tuning_signature}"
     return f"{file_hash}:{'ml' if use_model else 'heuristic'}"
 
 
@@ -159,13 +226,17 @@ def _clear_analysis_cache(file_hash: str) -> None:
             analysis_cache.pop(key, None)
 
 
-def _score_transactions(df: pd.DataFrame, use_model: bool) -> pd.DataFrame:
+def _score_transactions(
+    df: pd.DataFrame,
+    use_model: bool,
+    weight_multipliers: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
     if use_model:
         try:
             return ml_fraud_detection(df)
         except ModelNotAvailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return simple_fraud_detection(df)
+    return simple_fraud_detection(df, weight_multipliers=weight_multipliers)
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
@@ -227,6 +298,9 @@ def _get_or_compute_analysis(file_hash: str, use_model: bool = False) -> pd.Data
             analysis_cache[cache_key] = _score_transactions(
                 uploaded_files[file_hash],
                 use_model=use_model,
+                weight_multipliers=(
+                    None if use_model else _heuristic_weight_multipliers(file_hash)
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -241,6 +315,8 @@ def _review_records_for_export(file_hash: str) -> pd.DataFrame:
                 "transaction_id",
                 "review_decision",
                 "reviewer_notes",
+                "feedback_reason_codes",
+                "feedback_reasoning",
                 "reviewed_at",
             ]
         )
@@ -251,6 +327,10 @@ def _review_records_for_export(file_hash: str) -> pd.DataFrame:
                 "transaction_id": transaction_id,
                 "review_decision": record.get("action", ""),
                 "reviewer_notes": record.get("reviewer_notes", ""),
+                "feedback_reason_codes": ";".join(
+                    _clean_feedback_reason_codes(record.get("feedback_reason_codes", []))
+                ),
+                "feedback_reasoning": record.get("feedback_reasoning", ""),
                 "reviewed_at": record.get("reviewed_at", ""),
             }
             for transaction_id, record in records.items()
@@ -265,6 +345,8 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
     if review_df.empty:
         analyzed_df["review_decision"] = ""
         analyzed_df["reviewer_notes"] = ""
+        analyzed_df["feedback_reason_codes"] = ""
+        analyzed_df["feedback_reasoning"] = ""
         analyzed_df["reviewed_at"] = ""
         return analyzed_df
 
@@ -276,9 +358,13 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
         {
             "review_decision": "",
             "reviewer_notes": "",
+            "feedback_reason_codes": "",
+            "feedback_reasoning": "",
             "reviewed_at": "",
         }
     )
+    if use_model:
+        return analyzed_with_reviews
     return _apply_review_feedback(analyzed_with_reviews, review_df)
 
 
@@ -783,6 +869,10 @@ async def get_review_audit(file_hash: str):
             transaction_id=transaction_id,
             action=str(record["action"]),
             reviewer_notes=record.get("reviewer_notes"),
+            feedback_reason_codes=_clean_feedback_reason_codes(
+                record.get("feedback_reason_codes", [])
+            ),
+            feedback_reasoning=record.get("feedback_reasoning"),
             reviewed_at=str(record["reviewed_at"]),
         )
         for transaction_id, record in sorted(
@@ -814,9 +904,18 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
         review_log[file_hash].pop(transaction_id, None)
         reviewed_at = datetime.now(timezone.utc).isoformat()
     else:
+        feedback_reasoning = (
+            review_action.feedback_reasoning
+            if review_action.feedback_reasoning is not None
+            else review_action.reviewer_notes
+        )
         review_log[file_hash][transaction_id] = {
             "action": action,
             "reviewer_notes": review_action.reviewer_notes,
+            "feedback_reason_codes": _clean_feedback_reason_codes(
+                review_action.feedback_reason_codes
+            ),
+            "feedback_reasoning": feedback_reasoning,
             "reviewed_at": datetime.now(timezone.utc).isoformat(),
         }
         reviewed_at = str(review_log[file_hash][transaction_id]["reviewed_at"])
@@ -826,6 +925,10 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
         "transaction_id": transaction_id,
         "action": action,
         "reviewer_notes": review_action.reviewer_notes,
+        "feedback_reason_codes": _clean_feedback_reason_codes(
+            review_action.feedback_reason_codes
+        ),
+        "feedback_reasoning": review_action.feedback_reasoning,
         "reviewed_at": reviewed_at,
     }
 
@@ -842,6 +945,10 @@ async def get_review_log(file_hash: str):
                 transaction_id=transaction_id,
                 action=str(payload.get("action", "")),
                 reviewer_notes=payload.get("reviewer_notes"),
+                feedback_reason_codes=_clean_feedback_reason_codes(
+                    payload.get("feedback_reason_codes", [])
+                ),
+                feedback_reasoning=payload.get("feedback_reasoning"),
                 reviewed_at=str(payload.get("reviewed_at", "")),
             )
         )

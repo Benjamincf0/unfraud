@@ -10,6 +10,18 @@ import pandas as pd
 # Challenge dataset ~1% fraud — keep the reviewer queue focused.
 FRAUD_SCORE_THRESHOLD = 0.55
 
+HEURISTIC_SIGNAL_CODES = {
+    "amount_outlier",
+    "category_amount",
+    "category_shift",
+    "device_shift",
+    "ip_shift",
+    "geo_shift",
+    "device_reuse_cross_card",
+    "ip_reuse_cross_card",
+    "merchant_burst_cross_card",
+}
+
 
 def _top_values(series: pd.Series, limit: int = 4) -> List[str]:
     values = series.dropna().astype(str)
@@ -37,9 +49,31 @@ def _build_card_amount_series(df: pd.DataFrame, points: int = 12) -> Dict[str, L
     return series_map
 
 
-def simple_fraud_detection(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_weight_multipliers(
+    weight_multipliers: Optional[Dict[str, float]],
+) -> Dict[str, float]:
+    if not weight_multipliers:
+        return {}
+
+    multipliers: Dict[str, float] = {}
+    for code, value in weight_multipliers.items():
+        if code not in HEURISTIC_SIGNAL_CODES:
+            continue
+        try:
+            multiplier = float(value)
+        except (TypeError, ValueError):
+            continue
+        multipliers[code] = min(2.0, max(0.25, multiplier))
+    return multipliers
+
+
+def simple_fraud_detection(
+    df: pd.DataFrame,
+    weight_multipliers: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
     """Per-card anomaly scoring + cross-card aggregation + explainable output."""
     working = df.copy()
+    multipliers = _normalize_weight_multipliers(weight_multipliers)
     if working.empty:
         for column, default_value in [
             ("is_fraud", False),
@@ -216,18 +250,29 @@ def simple_fraud_detection(df: pd.DataFrame) -> pd.DataFrame:
         "ip_reuse_cross_card": 0.09 * ip_reuse_risk,
         "merchant_burst_cross_card": 0.14 * merchant_burst_risk,
     }
+    components = {
+        code: (component * multipliers.get(code, 1.0)).clip(lower=0, upper=1)
+        for code, component in components.items()
+    }
 
     score = sum(components.values()).clip(lower=0, upper=1)
     has_category_history = category_seen_before >= 1
     high_confidence_rule = (
-        (working["amount_ratio"] >= 7.0)
+        ((working["amount_ratio"] >= 7.0) & (multipliers.get("amount_outlier", 1.0) >= 0.5))
         | (
             has_category_history
             & (working["amount_ratio_category"] >= 6.0)
             & (cat_z_capped >= 3.5)
+            & (multipliers.get("category_amount", 1.0) >= 0.5)
         )
-        | (working["ip_card_fanout"] >= 4)
-        | (working["merchant_unique_cards_2h"] >= 7)
+        | (
+            (working["ip_card_fanout"] >= 4)
+            & (multipliers.get("ip_reuse_cross_card", 1.0) >= 0.5)
+        )
+        | (
+            (working["merchant_unique_cards_2h"] >= 7)
+            & (multipliers.get("merchant_burst_cross_card", 1.0) >= 0.5)
+        )
     )
     working["fraud_score"] = score.round(4)
     working["is_fraud"] = (working["fraud_score"] >= FRAUD_SCORE_THRESHOLD) | high_confidence_rule
