@@ -80,6 +80,42 @@ def _write_sample_csv() -> str:
     return path
 
 
+def test_high_priority_features_present_and_sane():
+    g = build_features(shrink(load(_write_sample_csv())))
+    for col in (
+        "amt_z_vs_category",
+        "distinct_categories_24h",
+        "hour_rarity_for_card",
+        "hour_never_seen_for_card",
+    ):
+        assert col in g.columns
+    fraud_row = g[g["transaction_id"] == "tx_fraud"].iloc[0]
+    assert fraud_row["hour_never_seen_for_card"] == 1 or fraud_row["hour_rarity_for_card"] >= 0.85
+    assert fraud_row["amt_z_vs_card"] > 0
+
+
+def test_amt_z_vs_category_uses_prior_category_history():
+    df = pd.DataFrame(
+        {
+            "transaction_id": ["t1", "t2", "t3"],
+            "timestamp": pd.to_datetime(
+                ["2026-04-25T10:00:00", "2026-04-25T10:30:00", "2026-04-25T11:00:00"]
+            ),
+            "card_id": ["c1", "c2", "c3"],
+            "amount": [10.0, 12.0, 500.0],
+            "merchant_name": ["A", "B", "C"],
+            "merchant_category": ["grocery", "grocery", "grocery"],
+            "channel": "online",
+            "cardholder_country": "US",
+            "merchant_country": "US",
+            "device_id": ["d1", "d2", "d3"],
+            "ip_address": ["1.1.1.1", "2.2.2.2", "3.3.3.3"],
+        }
+    )
+    g = build_features(shrink(df))
+    assert g.iloc[2]["amt_z_vs_category"] > 2.0
+
+
 def test_temporal_split_train_val_test():
     g = _feature_frame()
     train, val, test = temporal_split(g, train_frac=0.6, val_frac=0.2)

@@ -176,6 +176,21 @@ def add_device_ip_velocity(df, window="24h"):
     return g
 
 
+def _expanding_amount_zscore(g: pd.DataFrame, group_col: str) -> pd.Series:
+    """Z-score vs expanding mean/std within group_col; current row excluded."""
+    grp = g.groupby(group_col)
+    a = g["amount"]
+    cnt = grp.cumcount()
+    csum = grp["amount"].cumsum() - a
+    csumsq = grp["amount"].transform(lambda s: (s ** 2).cumsum()) - a ** 2
+
+    denom = cnt.replace(0, np.nan)
+    mean = csum / denom
+    var = (csumsq - csum ** 2 / denom) / (cnt - 1).replace(0, np.nan)
+    std = np.sqrt(var)
+    return ((a - mean.fillna(a)) / std.fillna(0).replace(0, np.nan)).fillna(0)
+
+
 def add_card_history_features(df):
     """Per-card running stats computed from PAST rows only (expanding,
     shifted by 1 so the current row never sees its own value)."""
@@ -183,8 +198,8 @@ def add_card_history_features(df):
     grp = g.groupby("card_id")
     a = g["amount"]
 
-    cnt = grp.cumcount()                                  # # of prior rows
-    csum = grp["amount"].cumsum() - a                     # sum of prior rows
+    cnt = grp.cumcount()
+    csum = grp["amount"].cumsum() - a
     csumsq = grp["amount"].transform(lambda s: (s ** 2).cumsum()) - a ** 2
 
     denom = cnt.replace(0, np.nan)
@@ -194,9 +209,59 @@ def add_card_history_features(df):
 
     g["card_amt_mean_so_far"] = mean.fillna(a)
     g["card_amt_std_so_far"] = std.fillna(0)
-    g["amt_z_vs_card"] = (
-        (a - g["card_amt_mean_so_far"]) / g["card_amt_std_so_far"].replace(0, np.nan)
-    ).fillna(0)
+    g["amt_z_vs_card"] = _expanding_amount_zscore(g, "card_id")
+    return g
+
+
+def add_category_history_features(df):
+    """Amount z-score vs merchant_category norm (prior txs in category only)."""
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    g["amt_z_vs_category"] = _expanding_amount_zscore(g, "merchant_category")
+    return g
+
+
+def _card_rolling_distinct(g: pd.DataFrame, value_col: str, window: str) -> np.ndarray:
+    """Per-card trailing distinct count of value_col in a time window."""
+    window_ns = pd.Timedelta(window).value
+    results = np.ones(len(g), dtype=np.float64)
+    for _, card_df in g.groupby("card_id", sort=False):
+        card_df = card_df.sort_values("timestamp")
+        times_ns = card_df["timestamp"].values.astype("datetime64[ns]").astype(np.int64)
+        codes = pd.Categorical(card_df[value_col]).codes.astype(np.int64)
+        distinct = _rolling_distinct_count(times_ns, codes, window_ns)
+        results[card_df.index.to_numpy()] = distinct
+    return results
+
+
+def add_card_category_diversity(df):
+    """Distinct merchant_category count per card in trailing 24h."""
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    g["distinct_categories_24h"] = _card_rolling_distinct(g, "merchant_category", "24h")
+    return g
+
+
+def add_card_hour_pattern_features(df, min_history: int = 3):
+    """Hour rarity vs the card's own prior transaction pattern."""
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    rarity = np.zeros(len(g), dtype=np.float64)
+    never_seen = np.zeros(len(g), dtype=np.int64)
+
+    for _, card_df in g.groupby("card_id", sort=False):
+        hour_counts = np.zeros(24, dtype=np.int64)
+        total = 0
+        for idx, hour in zip(
+            card_df.sort_values("timestamp").index,
+            card_df.sort_values("timestamp")["hour_of_day"].astype(int),
+        ):
+            if total >= min_history:
+                freq = hour_counts[hour] / total
+                rarity[idx] = 1.0 - freq
+                never_seen[idx] = int(hour_counts[hour] == 0)
+            hour_counts[hour] += 1
+            total += 1
+
+    g["hour_rarity_for_card"] = rarity
+    g["hour_never_seen_for_card"] = never_seen
     return g
 
 
@@ -207,6 +272,9 @@ def build_features(df):
     g = add_change_features(g)
     g = add_device_ip_velocity(g)
     g = add_card_history_features(g)
+    g = add_category_history_features(g)
+    g = add_card_category_diversity(g)
+    g = add_card_hour_pattern_features(g)
 
     # missing-value flags carry signal (e.g. online tx have no device on POS)
     g["device_missing"] = g["device_id"].isna().astype(int)
@@ -236,6 +304,8 @@ NUMERIC = [
     "fast_country_hop", "cross_border",
     "device_card_fanout_24h", "ip_card_fanout_24h",
     "card_amt_mean_so_far", "card_amt_std_so_far", "amt_z_vs_card",
+    "amt_z_vs_category", "distinct_categories_24h",
+    "hour_rarity_for_card", "hour_never_seen_for_card",
     "device_missing", "ip_missing",
 ]
 
@@ -656,12 +726,14 @@ RULE_LABELS = {
 def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
     """Six deterministic rules that always run alongside the ML model."""
     out = g.copy()
-    out["rule_amount"] = out["amt_z_vs_card"] >= 3.0
+    out["rule_amount"] = (out["amt_z_vs_card"] >= 3.0) | (out["amt_z_vs_category"] >= 3.5)
     out["rule_velocity"] = (out["tx_5min"] >= 4) | (out["tx_1h"] >= 8)
     out["rule_geo"] = (out["cross_border"] == 1) & (
         (out["country_hop"] == 1) | (out["fast_country_hop"] == 1)
     )
-    out["rule_offhours"] = (out["is_night"] == 1) & (out["amt_z_vs_card"] >= 2.0)
+    out["rule_offhours"] = (
+        (out["hour_never_seen_for_card"] == 1) | (out["hour_rarity_for_card"] >= 0.85)
+    ) & ((out["amt_z_vs_card"] >= 2.0) | (out["amt_z_vs_category"] >= 2.5))
     out["rule_device_ip"] = (out["device_card_fanout_24h"] >= 3) | (
         out["ip_card_fanout_24h"] >= 3
     )
@@ -676,8 +748,13 @@ def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
 def _rule_reason_codes(row: pd.Series) -> List[str]:
     parts: List[str] = []
     if row["rule_amount"]:
-        sigma = max(float(row["amt_z_vs_card"]), 3.0)
-        parts.append(f"amount {sigma:.0f}σ above card norm")
+        card_sigma = float(row["amt_z_vs_card"])
+        cat_sigma = float(row["amt_z_vs_category"])
+        if card_sigma >= 3.0:
+            parts.append(f"amount {max(card_sigma, 3.0):.0f}σ above card norm")
+        if cat_sigma >= 3.5:
+            cat = row.get("merchant_category", "category")
+            parts.append(f"amount {cat_sigma:.0f}σ above {cat} norm")
     if row["rule_velocity"]:
         parts.append(
             f"velocity spike ({int(row['tx_5min'])} tx/5m, {int(row['tx_1h'])} tx/1h)"
@@ -687,7 +764,10 @@ def _rule_reason_codes(row: pd.Series) -> List[str]:
             f"geo hop ({row['cardholder_country']}→{row['merchant_country']})"
         )
     if row["rule_offhours"]:
-        parts.append(f"off-hours spend ({int(row['hour_of_day']):02d}:00)")
+        if row["hour_never_seen_for_card"] == 1:
+            parts.append(f"atypical hour for card ({int(row['hour_of_day']):02d}:00)")
+        else:
+            parts.append(f"rare hour for card ({int(row['hour_of_day']):02d}:00)")
     if row["rule_device_ip"]:
         if row["device_card_fanout_24h"] >= 3:
             parts.append(f"{int(row['device_card_fanout_24h'])} cards on this device")
@@ -739,6 +819,18 @@ def _feature_reason_code(name: str, shap_val: float, row: pd.Series) -> Optional
         if sigma >= 2:
             return f"amount {sigma:.0f}σ above card norm"
         return f"amount elevated vs card norm ({sigma:.1f}σ)"
+    if name == "amt_z_vs_category" and val is not None:
+        sigma = abs(float(val))
+        cat = row.get("merchant_category", "category")
+        if sigma >= 2:
+            return f"amount {sigma:.0f}σ above {cat} norm"
+        return f"amount elevated vs {cat} norm ({sigma:.1f}σ)"
+    if name == "distinct_categories_24h" and val is not None and float(val) >= 3:
+        return f"{int(val)} merchant categories in 24h"
+    if name == "hour_never_seen_for_card" and val == 1:
+        return f"atypical hour for card ({int(row.get('hour_of_day', 0)):02d}:00)"
+    if name == "hour_rarity_for_card" and val is not None and float(val) >= 0.85:
+        return f"rare hour for card ({int(row.get('hour_of_day', 0)):02d}:00)"
     if name == "ip_card_fanout_24h" and val is not None and float(val) >= 2:
         return f"{int(val)} cards on this IP"
     if name == "device_card_fanout_24h" and val is not None and float(val) >= 2:
