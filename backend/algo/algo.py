@@ -37,6 +37,18 @@ def load(path):
     return df
 
 
+def shrink(df):
+    """Reduce memory footprint for large files."""
+    df["amount"] = pd.to_numeric(df["amount"], downcast="float")
+    for c in [
+        "merchant_category",
+        "channel",
+        "cardholder_country",
+        "merchant_country",
+    ]:
+        df[c] = df[c].astype("category")
+    return df
+
 # ---------------------------------------------------------------------------
 # 2. Feature engineering
 #    Every feature must be computable using ONLY past+current rows of a card,
@@ -67,25 +79,16 @@ def add_amount_features(df):
 def add_card_velocity_features(df):
     """Per-card trailing velocity & spend. Uses time-based rolling windows."""
     g = df.sort_values("timestamp").copy()
-
-    # set timestamp index per group for time-based rolling
-    def roll_count(s, win):
-        return s.rolling(win).count()
-
-    def roll_sum(s, win):
-        return s.rolling(win).sum()
-
     idx = g.set_index("timestamp").groupby("card_id")["amount"]
 
-    g["tx_1min"] = idx.transform(lambda s: roll_count(s, "1min")).values
-    g["tx_5min"] = idx.transform(lambda s: roll_count(s, "5min")).values
-    g["tx_1h"] = idx.transform(lambda s: roll_count(s, "1h")).values
-    g["tx_24h"] = idx.transform(lambda s: roll_count(s, "24h")).values
-    g["spend_24h"] = idx.transform(lambda s: roll_sum(s, "24h")).values
+    g["tx_1min"] = idx.transform(lambda s: s.rolling("1min").count()).values
+    g["tx_5min"] = idx.transform(lambda s: s.rolling("5min").count()).values
+    g["tx_1h"] = idx.transform(lambda s: s.rolling("1h").count()).values
+    g["tx_24h"] = idx.transform(lambda s: s.rolling("24h").count()).values
+    g["spend_24h"] = idx.transform(lambda s: s.rolling("24h").sum()).values
 
     grp = g.groupby("card_id")
-    g["time_since_last"] = grp["timestamp"].diff().dt.total_seconds()
-    g["time_since_last"] = g["time_since_last"].fillna(1e7)  # first tx = "long ago"
+    g["time_since_last"] = grp["timestamp"].diff().dt.total_seconds().fillna(1e7)
     g["tx_of_day"] = g.groupby(["card_id", "date"]).cumcount() + 1
     return g
 
@@ -94,89 +97,91 @@ def add_change_features(df):
     """Did merchant/device/country change vs the card's previous tx?"""
     g = df.sort_values("timestamp").copy()
     grp = g.groupby("card_id")
-
-    g["merchant_change"] = (
-        g["merchant_name"] != grp["merchant_name"].shift()
-    ).fillna(False).astype(int)  # first tx per card → no change
-
+    g["merchant_change"] = (g["merchant_name"] != grp["merchant_name"].shift()).fillna(False).astype(int)
     g["device_change"] = (
         g["device_id"].fillna("NA") != grp["device_id"].shift().fillna("NA")
     ).fillna(False).astype(int)
-
-    g["prev_merch_country"] = grp["merchant_country"].shift()
+    prev_country = grp["merchant_country"].shift()
     g["country_hop"] = (
-        (g["merchant_country"] != g["prev_merch_country"])
-        & g["prev_merch_country"].notna()
+        (g["merchant_country"] != prev_country) & prev_country.notna()
     ).fillna(False).astype(int)
-
-    g["minutes_since_last"] = g["time_since_last"] / 60.0
-
-    g["fast_country_hop"] = (
-        (g["country_hop"] == 1) & (g["minutes_since_last"] < 60)
-    ).fillna(False).astype(int)
-
-    g["cross_border"] = (
-        g["cardholder_country"] != g["merchant_country"]
-    ).fillna(False).astype(int)
-
+    minutes = g["time_since_last"] / 60.0
+    g["fast_country_hop"] = ((g["country_hop"] == 1) & (minutes < 60)).fillna(False).astype(int)
+    g["cross_border"] = (g["cardholder_country"] != g["merchant_country"]).fillna(False).astype(int)
     return g
 
 
-def add_device_ip_velocity(df):
-    g = df.sort_values("timestamp").copy()
-    g = g.reset_index(drop=True)  # ensure clean integer index
+def _rolling_distinct_count(times_ns, codes, window_ns):
+    """Exact distinct count in trailing window (t-W, t], O(n) per group.
+    times_ns must be sorted ascending."""
+    n = len(times_ns)
+    out = np.empty(n, dtype=np.float64)
+    counts = {}
+    left = 0
+    for right in range(n):
+        c = codes[right]
+        counts[c] = counts.get(c, 0) + 1
+        while times_ns[right] - times_ns[left] > window_ns:
+            lc = codes[left]
+            counts[lc] -= 1
+            if counts[lc] == 0:
+                del counts[lc]
+            left += 1
+        out[right] = len(counts)
+    return out
 
-    # Encode card_id as integers once — rolling.apply needs numeric data
-    card_codes = pd.Categorical(g["card_id"]).codes.astype(float)
 
-    def fanout(col, win="24h"):
-        sub = pd.DataFrame({
-            "timestamp": g["timestamp"],
-            col: g[col],
-            "card_code": card_codes,
-            "orig_idx": g.index,
-        }).dropna(subset=[col]).copy()
+def add_device_ip_velocity(df, window="24h"):
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    window_ns = pd.Timedelta(window).value
+    card_codes = pd.Categorical(g["card_id"]).codes.astype(np.int64)
+    ts_ns = g["timestamp"].values.astype("datetime64[ns]").astype(np.int64)
 
+    def fanout(col):
         results = np.full(len(g), np.nan)
-
-        for entity, grp in sub.groupby(col):
-            grp = grp.set_index("timestamp")
-            rolled = grp["card_code"].rolling(win).apply(
-                lambda x: len(np.unique(x)), raw=True  # raw=True → numpy array, faster
+        mask = g[col].notna().values
+        if not mask.any():
+            return results
+        idx = np.flatnonzero(mask)
+        ent = pd.Categorical(g.loc[mask, col]).codes
+        sub_t, sub_c = ts_ns[idx], card_codes[idx]
+        order = np.argsort(ent, kind="stable")
+        ent_s, t_s, c_s, orig_s = ent[order], sub_t[order], sub_c[order], idx[order]
+        bounds = np.flatnonzero(np.diff(ent_s)) + 1
+        starts = np.concatenate(([0], bounds))
+        ends = np.concatenate((bounds, [len(ent_s)]))
+        for s, e in zip(starts, ends):
+            results[orig_s[s:e]] = _rolling_distinct_count(
+                t_s[s:e], c_s[s:e], window_ns
             )
-            # map results back via orig_idx (not timestamp, which has dupes)
-            results[grp["orig_idx"].values] = rolled.values
-
         return results
 
-    g["device_card_fanout_24h"] = pd.Series(
-        fanout("device_id"), index=g.index
-    ).fillna(1)
-    g["ip_card_fanout_24h"] = pd.Series(
-        fanout("ip_address"), index=g.index
-    ).fillna(1)
+    g["device_card_fanout_24h"] = pd.Series(fanout("device_id")).fillna(1)
+    g["ip_card_fanout_24h"] = pd.Series(fanout("ip_address")).fillna(1)
     return g
 
 
 def add_card_history_features(df):
     """Per-card running stats computed from PAST rows only (expanding,
     shifted by 1 so the current row never sees its own value)."""
-    g = df.sort_values("timestamp").copy()
-    grp = g.groupby("card_id")["amount"]
-    g["card_amt_mean_so_far"] = grp.transform(
-        lambda s: s.shift().expanding().mean()
-    )
-    g["card_amt_std_so_far"] = grp.transform(
-        lambda s: s.shift().expanding().std()
-    )
-    # z-score of current amount vs card's own history
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    grp = g.groupby("card_id")
+    a = g["amount"]
+
+    cnt = grp.cumcount()                                  # # of prior rows
+    csum = grp["amount"].cumsum() - a                     # sum of prior rows
+    csumsq = grp["amount"].transform(lambda s: (s ** 2).cumsum()) - a ** 2
+
+    denom = cnt.replace(0, np.nan)
+    mean = csum / denom
+    var = (csumsq - csum ** 2 / denom) / (cnt - 1).replace(0, np.nan)
+    std = np.sqrt(var)
+
+    g["card_amt_mean_so_far"] = mean.fillna(a)
+    g["card_amt_std_so_far"] = std.fillna(0)
     g["amt_z_vs_card"] = (
-        (g["amount"] - g["card_amt_mean_so_far"])
-        / g["card_amt_std_so_far"].replace(0, np.nan)
-    )
-    g["amt_z_vs_card"] = g["amt_z_vs_card"].fillna(0)
-    g["card_amt_mean_so_far"] = g["card_amt_mean_so_far"].fillna(g["amount"])
-    g["card_amt_std_so_far"] = g["card_amt_std_so_far"].fillna(0)
+        (a - g["card_amt_mean_so_far"]) / g["card_amt_std_so_far"].replace(0, np.nan)
+    ).fillna(0)
     return g
 
 
@@ -206,38 +211,17 @@ CATEGORICAL = [
 ]
 
 NUMERIC = [
-    "amount",
-    "amt_log",
-    "amt_is_round",
-    "amt_card_test",
-    "amt_just_below_100",
-    "amt_just_below_500",
-    "hour_of_day",
-    "day_of_week",
-    "is_weekend",
-    "is_night",
-    "user_age",
-    "distance_to_merchant",
-    "city_pop",
-    "tx_1min",
-    "tx_5min",
-    "tx_1h",
-    "tx_24h",
-    "spend_24h",
-    "time_since_last",
-    "tx_of_day",
-    "merchant_change",
-    "device_change",
-    "country_hop",
-    "fast_country_hop",
-    "cross_border",
-    "device_card_fanout_24h",
-    "ip_card_fanout_24h",
-    "card_amt_mean_so_far",
-    "card_amt_std_so_far",
-    "amt_z_vs_card",
-    "device_missing",
-    "ip_missing",
+    "amount", "amt_log", "amt_is_round", "amt_card_test",
+    "amt_just_below_100", "amt_just_below_500",
+    "hour_of_day", "day_of_week", "is_weekend", "is_night",
+    "user_age", "city_pop",
+    "tx_1min", "tx_5min", "tx_1h", "tx_24h", "spend_24h",
+    "time_since_last", "tx_of_day",
+    "merchant_change", "device_change", "country_hop",
+    "fast_country_hop", "cross_border",
+    "device_card_fanout_24h", "ip_card_fanout_24h",
+    "card_amt_mean_so_far", "card_amt_std_so_far", "amt_z_vs_card",
+    "device_missing", "ip_missing",
 ]
 
 FEATURES = NUMERIC + CATEGORICAL
@@ -270,7 +254,7 @@ def temporal_split(g, train_frac=0.8):
 # 5. Train
 # ---------------------------------------------------------------------------
 def train_model(X_tr, y_tr):
-    pos = y_tr.sum()
+    pos = int(y_tr.sum())
     neg = len(y_tr) - pos
     model = LGBMClassifier(
         n_estimators=600,
@@ -281,16 +265,13 @@ def train_model(X_tr, y_tr):
         subsample_freq=1,
         colsample_bytree=0.8,
         reg_lambda=1.0,
+        max_bin=127,                       # smaller histograms = less memory
         scale_pos_weight=neg / max(pos, 1),  # imbalance handling
         objective="binary",
         n_jobs=-1,
         random_state=42,
     )
-    model.fit(
-        X_tr,
-        y_tr,
-        categorical_feature=CATEGORICAL,
-    )
+    model.fit(X_tr, y_tr, categorical_feature=CATEGORICAL)
     return model
 
 
@@ -307,10 +288,9 @@ def precision_at_k(y_true, scores, k):
 def pick_threshold_by_cost(y_true, scores, cost_fn=100.0, cost_fp=2.0):
     """Choose the probability cutoff that minimizes expected cost.
     cost_fn = cost of MISSING a fraud; cost_fp = cost of a false alarm."""
-    prec, rec, thr = precision_recall_curve(y_true, scores)
-    best_t, best_cost = 0.5, np.inf
+    _, _, thr = precision_recall_curve(y_true, scores)
     n_pos = y_true.sum()
-    n = len(y_true)
+    best_t, best_cost = 0.5, np.inf
     for t in thr:
         pred = scores >= t
         tp = ((pred == 1) & (y_true == 1)).sum()
@@ -324,24 +304,18 @@ def pick_threshold_by_cost(y_true, scores, cost_fn=100.0, cost_fp=2.0):
 
 def evaluate(model, X_te, y_te):
     scores = model.predict_proba(X_te)[:, 1]
-
-    pr_auc = average_precision_score(y_te, scores)
-    roc = roc_auc_score(y_te, scores)
-    print(f"\nPR-AUC (avg precision): {pr_auc:.4f}")
-    print(f"ROC-AUC               : {roc:.4f}")
-
+    print(f"\nPR-AUC : {average_precision_score(y_te, scores):.4f}")
+    print(f"ROC-AUC: {roc_auc_score(y_te, scores):.4f}")
     for k in (100, 500, 1000):
         k = min(k, len(y_te))
         print(f"Precision@{k:<5}: {precision_at_k(y_te, scores, k):.4f}")
 
     t, cost = pick_threshold_by_cost(y_te, scores)
     print(f"\nCost-optimal threshold: {t:.4f} (expected cost={cost:,.0f})")
-
     pred = (scores >= t).astype(int)
-    print("\nConfusion matrix @ cost-optimal threshold:")
+    print("\nConfusion matrix:")
     print(confusion_matrix(y_te, pred))
     print("\n", classification_report(y_te, pred, digits=4))
-
     return scores
 
 
@@ -359,22 +333,18 @@ def show_importances(model, top=20):
 # main
 # ---------------------------------------------------------------------------
 def main(path):
-    df = load(path)
+    df = shrink(load(path))
     g = build_features(df)
-    print(g.groupby("is_fraud")["distance_to_merchant"].describe())
-
-#     train, test = temporal_split(g)
-
-#     X_tr, y_tr = prepare_matrix(train)
-#     X_te, y_te = prepare_matrix(test)
-
-#     model = train_model(X_tr, y_tr)
-#     evaluate(model, X_te, y_te)
-#     show_importances(model)
-#     return model
+    train, test = temporal_split(g)
+    X_tr, y_tr = prepare_matrix(train)
+    X_te, y_te = prepare_matrix(test)
+    model = train_model(X_tr, y_tr)
+    evaluate(model, X_te, y_te)
+    show_importances(model)
+    return model
 
 
 if __name__ == "__main__":
     import sys
 
-    main(sys.argv[1] if len(sys.argv) > 1 else "transactions.csv")
+    main(sys.argv[1] if len(sys.argv) > 1 else "fraudTrain_part1.csv")
