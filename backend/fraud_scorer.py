@@ -360,18 +360,33 @@ def simple_fraud_detection(
         | (velocity_risk >= 0.2)
         | (merchant_burst_risk >= 0.3)
     )
+    shared_or_missing_identity = (
+        (working["device_card_fanout"] >= 3)
+        | (working["ip_card_fanout"] >= 3)
+        | (working["device_missing"] == 1)
+        | (working["ip_missing"] == 1)
+    )
+    strong_amount_or_identity = (
+        (working["amount_zscore"].abs() >= 2.5)
+        | (working["amount_zscore_category"].abs() >= 3.0)
+        | (working["amount_ratio"] >= 3.0)
+        | (working["amount_ratio_category"] >= 4.0)
+        | shared_or_missing_identity
+        | (velocity_risk >= 0.4)
+        | (merchant_burst_risk >= 0.4)
+    )
     time_risk = (
         (
             (working["hour_never_seen_for_card"].astype(float) * 1.0)
             .combine(working["hour_rarity_for_card"].astype(float), max)
-            * amount_or_identity.astype(float)
+            * strong_amount_or_identity.astype(float)
         )
         + (
             working["is_night"].astype(float)
             * (
-                (working["amount_zscore"].abs() >= 2.0)
-                | (working["amount_zscore_category"].abs() >= 2.5)
-                | (velocity_risk >= 0.2)
+                (working["amount_zscore"].abs() >= 2.5)
+                | (working["amount_zscore_category"].abs() >= 3.0)
+                | (velocity_risk >= 0.4)
             ).astype(float)
             * 0.35
         )
@@ -382,6 +397,7 @@ def simple_fraud_detection(
             working["country_hop"].astype(float) * 0.55
             + working["fast_country_hop"].astype(float) * 0.45
         )
+        * strong_amount_or_identity.astype(float)
     ).clip(lower=0, upper=1)
     merchant_device_change_risk = (
         (
@@ -469,13 +485,15 @@ def simple_fraud_detection(
         | (
             (working["fast_country_hop"] == 1)
             & (working["foreign_country"] == 1)
+            & strong_amount_or_identity
             & (multipliers.get("rapid_geo_hop", 1.0) >= 0.5)
         )
         | (
             (working["hour_never_seen_for_card"] == 1)
             & (
-                (working["amount_zscore"].abs() >= 2.0)
-                | (working["amount_zscore_category"].abs() >= 2.5)
+                (working["amount_zscore"].abs() >= 2.5)
+                | (working["amount_zscore_category"].abs() >= 3.0)
+                | shared_or_missing_identity
             )
             & (multipliers.get("time_anomaly", 1.0) >= 0.5)
         )
