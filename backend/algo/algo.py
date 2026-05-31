@@ -1,16 +1,29 @@
 """
 Fraud detection: rule features + LightGBM, with temporal validation.
+
+Explainability & ops:
+  - SHAP per-alert reason codes for analyst trust / compliance
+  - Weekly PR-AUC drift monitoring with scheduled retrain
+  - Six raw rule guardrails running in parallel with the model
 """
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import shap
 from lightgbm import LGBMClassifier
 from sklearn.metrics import (
     average_precision_score,
-    roc_auc_score,
-    precision_recall_curve,
     classification_report,
     confusion_matrix,
+    precision_recall_curve,
+    roc_auc_score,
 )
 
 
@@ -107,7 +120,9 @@ def add_change_features(df):
     ).fillna(False).astype(int)
     minutes = g["time_since_last"] / 60.0
     g["fast_country_hop"] = ((g["country_hop"] == 1) & (minutes < 60)).fillna(False).astype(int)
-    g["cross_border"] = (g["cardholder_country"] != g["merchant_country"]).fillna(False).astype(int)
+    g["cross_border"] = (
+        g["cardholder_country"].astype(str) != g["merchant_country"].astype(str)
+    ).fillna(False).astype(int)
     return g
 
 
@@ -330,18 +345,522 @@ def show_importances(model, top=20):
 
 
 # ---------------------------------------------------------------------------
+# 7. Six rule guardrails (parallel to model — catch novel fraud)
+# ---------------------------------------------------------------------------
+RULE_COLUMNS = [
+    "rule_amount",
+    "rule_velocity",
+    "rule_geo",
+    "rule_offhours",
+    "rule_device_ip",
+    "rule_merchant_burst",
+]
+
+RULE_LABELS = {
+    "rule_amount": "amount",
+    "rule_velocity": "velocity",
+    "rule_geo": "geo",
+    "rule_offhours": "off-hours",
+    "rule_device_ip": "device/ip fanout",
+    "rule_merchant_burst": "merchant burst",
+}
+
+
+def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
+    """Six deterministic rules that always run alongside the ML model."""
+    out = g.copy()
+    out["rule_amount"] = out["amt_z_vs_card"] >= 3.0
+    out["rule_velocity"] = (out["tx_5min"] >= 4) | (out["tx_1h"] >= 8)
+    out["rule_geo"] = (out["cross_border"] == 1) & (
+        (out["country_hop"] == 1) | (out["fast_country_hop"] == 1)
+    )
+    out["rule_offhours"] = (out["is_night"] == 1) & (out["amt_z_vs_card"] >= 2.0)
+    out["rule_device_ip"] = (out["device_card_fanout_24h"] >= 3) | (
+        out["ip_card_fanout_24h"] >= 3
+    )
+    out["rule_merchant_burst"] = (out["merchant_change"] == 1) & (out["tx_1h"] >= 3)
+    out["rule_guardrail"] = out[RULE_COLUMNS].any(axis=1)
+    out["rule_reason_codes"] = [
+        _rule_reason_codes(row) for _, row in out.iterrows()
+    ]
+    return out
+
+
+def _rule_reason_codes(row: pd.Series) -> List[str]:
+    parts: List[str] = []
+    if row["rule_amount"]:
+        sigma = max(float(row["amt_z_vs_card"]), 3.0)
+        parts.append(f"amount {sigma:.0f}σ above card norm")
+    if row["rule_velocity"]:
+        parts.append(
+            f"velocity spike ({int(row['tx_5min'])} tx/5m, {int(row['tx_1h'])} tx/1h)"
+        )
+    if row["rule_geo"]:
+        parts.append(
+            f"geo hop ({row['cardholder_country']}→{row['merchant_country']})"
+        )
+    if row["rule_offhours"]:
+        parts.append(f"off-hours spend ({int(row['hour_of_day']):02d}:00)")
+    if row["rule_device_ip"]:
+        if row["device_card_fanout_24h"] >= 3:
+            parts.append(f"{int(row['device_card_fanout_24h'])} cards on this device")
+        if row["ip_card_fanout_24h"] >= 3:
+            parts.append(f"{int(row['ip_card_fanout_24h'])} cards on this IP")
+    if row["rule_merchant_burst"]:
+        parts.append(
+            f"merchant burst ({int(row['tx_1h'])} tx/1h after merchant change)"
+        )
+    return parts
+
+
+def format_alert_reason(
+    shap_codes: Sequence[str],
+    rule_codes: Sequence[str],
+    *,
+    model_score: Optional[float] = None,
+    rule_guardrail: bool = False,
+) -> str:
+    """Analyst-facing reason string, e.g. 'flagged: amount 6σ above card norm + 9 cards on this IP'."""
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for code in list(rule_codes) + list(shap_codes):
+        key = code.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            ordered.append(code.strip())
+    if not ordered:
+        if model_score is not None and model_score >= 0.5:
+            ordered.append(f"model score {model_score:.2f}")
+        elif rule_guardrail:
+            ordered.append("rule guardrail triggered")
+        else:
+            return ""
+    prefix = "flagged (guardrail)" if rule_guardrail and not shap_codes else "flagged"
+    return f"{prefix}: " + " + ".join(ordered)
+
+
+# ---------------------------------------------------------------------------
+# 8. SHAP explainability — per-alert reason codes
+# ---------------------------------------------------------------------------
+def _feature_reason_code(name: str, shap_val: float, row: pd.Series) -> Optional[str]:
+    """Map a positively-contributing feature to a short analyst reason."""
+    if shap_val <= 0:
+        return None
+    val = row.get(name)
+    if name == "amt_z_vs_card" and val is not None:
+        sigma = abs(float(val))
+        if sigma >= 2:
+            return f"amount {sigma:.0f}σ above card norm"
+        return f"amount elevated vs card norm ({sigma:.1f}σ)"
+    if name == "ip_card_fanout_24h" and val is not None and float(val) >= 2:
+        return f"{int(val)} cards on this IP"
+    if name == "device_card_fanout_24h" and val is not None and float(val) >= 2:
+        return f"{int(val)} cards on this device"
+    if name == "tx_5min" and val is not None and float(val) >= 2:
+        return f"{int(val)} tx in 5 minutes"
+    if name == "tx_1h" and val is not None and float(val) >= 4:
+        return f"{int(val)} tx in 1 hour"
+    if name == "cross_border" and val == 1:
+        return f"cross-border ({row.get('cardholder_country')}→{row.get('merchant_country')})"
+    if name == "fast_country_hop" and val == 1:
+        return "fast country hop (<60 min)"
+    if name == "is_night" and val == 1:
+        return f"night transaction ({int(row.get('hour_of_day', 0)):02d}:00)"
+    if name == "merchant_change" and val == 1:
+        return "new merchant for card"
+    if name == "device_change" and val == 1:
+        return "new device for card"
+    if name == "amt_just_below_100" and val == 1:
+        return "amount just below $100 threshold"
+    if name == "amt_just_below_500" and val == 1:
+        return "amount just below $500 threshold"
+    if shap_val >= 0.02:
+        readable = name.replace("_", " ")
+        return f"elevated {readable}"
+    return None
+
+
+def build_shap_explainer(model: LGBMClassifier, X_background: Optional[pd.DataFrame] = None):
+    # LightGBM categorical splits require tree_path_dependent when using SHAP.
+    _ = X_background
+    return shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
+
+
+def _prepare_shap_matrix(rows: pd.DataFrame) -> pd.DataFrame:
+    X = rows[FEATURES].copy()
+    for name in NUMERIC:
+        X[name] = pd.to_numeric(X[name], errors="coerce")
+    for c in CATEGORICAL:
+        X[c] = X[c].astype("category")
+    return X
+
+
+def _extract_shap_contributions(explainer, X: pd.DataFrame) -> np.ndarray:
+    """Batch SHAP contributions, shape (n_samples, n_features)."""
+    shap_values = explainer.shap_values(X, from_call=True)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+    arr = np.asarray(shap_values)
+    if arr.ndim == 3:
+        return arr[:, :, 1] if arr.shape[2] > 1 else arr[:, :, 0]
+    if arr.ndim == 2:
+        return arr
+    raise ValueError(f"Unexpected SHAP output shape: {arr.shape}")
+
+
+def _contributions_to_reason_codes(
+    row: pd.Series,
+    contributions: np.ndarray,
+    *,
+    top_k: int = 3,
+    min_shap: float = 0.01,
+) -> List[str]:
+    ranked = sorted(
+        zip(FEATURES, contributions),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    reasons: List[str] = []
+    for name, contrib in ranked:
+        if len(reasons) >= top_k:
+            break
+        if contrib < min_shap:
+            continue
+        code = _feature_reason_code(name, float(contrib), row)
+        if code:
+            reasons.append(code)
+    return reasons
+
+
+def shap_reason_codes(
+    explainer,
+    row: pd.Series,
+    *,
+    top_k: int = 3,
+    min_shap: float = 0.01,
+) -> List[str]:
+    """Top SHAP contributors as human-readable reason codes for one alert."""
+    X_row = _prepare_shap_matrix(pd.DataFrame([row]))
+    contributions = _extract_shap_contributions(explainer, X_row)[0]
+    return _contributions_to_reason_codes(row, contributions, top_k=top_k, min_shap=min_shap)
+
+
+def explain_alerts(
+    explainer,
+    g: pd.DataFrame,
+    model_scores: np.ndarray,
+    *,
+    flagged_mask: Optional[np.ndarray] = None,
+    top_k: int = 3,
+) -> pd.DataFrame:
+    """Attach SHAP + rule reason codes to flagged rows."""
+    out = g.copy()
+    if flagged_mask is None:
+        flagged_mask = out["is_fraud"].values if "is_fraud" in out.columns else model_scores >= 0.5
+    flagged_idx = np.flatnonzero(flagged_mask)
+    shap_by_index: Dict[int, List[str]] = {}
+
+    if len(flagged_idx) > 0:
+        flagged_rows = out.iloc[flagged_idx]
+        contributions = _extract_shap_contributions(
+            explainer, _prepare_shap_matrix(flagged_rows)
+        )
+        for pos, row_idx in enumerate(flagged_idx):
+            shap_by_index[int(row_idx)] = _contributions_to_reason_codes(
+                out.iloc[row_idx],
+                contributions[pos],
+                top_k=top_k,
+            )
+
+    reason_codes: List[str] = []
+    shap_codes_col: List[List[str]] = []
+    for i, (_, row) in enumerate(out.iterrows()):
+        if not flagged_mask[i]:
+            reason_codes.append("")
+            shap_codes_col.append([])
+            continue
+        shap_codes = shap_by_index.get(i, [])
+        rule_codes = row.get("rule_reason_codes") or []
+        if isinstance(rule_codes, str):
+            rule_codes = json.loads(rule_codes) if rule_codes.startswith("[") else [rule_codes]
+        alert = format_alert_reason(
+            shap_codes,
+            rule_codes,
+            model_score=float(model_scores[i]),
+            rule_guardrail=bool(row.get("rule_guardrail", False)),
+        )
+        reason_codes.append(alert)
+        shap_codes_col.append(shap_codes)
+    out["shap_reason_codes"] = shap_codes_col
+    out["alert_reason"] = reason_codes
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 9. Drift monitoring — weekly PR-AUC + scheduled retrain
+# ---------------------------------------------------------------------------
+OPS_DIR = Path(__file__).resolve().parent / "ops"
+DEFAULT_METRICS_PATH = OPS_DIR / "drift_metrics.json"
+
+
+def _iso_week(ts: Optional[datetime] = None) -> str:
+    ts = ts or datetime.now(timezone.utc)
+    year, week, _ = ts.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+class DriftMonitor:
+    """Track PR-AUC weekly; alert and retrain when performance drifts."""
+
+    PR_AUC_DROP_THRESHOLD = 0.05
+    RETRAIN_INTERVAL_WEEKS = 4
+
+    def __init__(self, metrics_path: Path | str = DEFAULT_METRICS_PATH):
+        self.path = Path(metrics_path)
+
+    def load(self) -> Dict[str, Any]:
+        if not self.path.exists():
+            return {"baseline_pr_auc": None, "weekly": [], "last_retrain_week": None}
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def save(self, data: Dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def record_weekly(
+        self,
+        pr_auc: float,
+        n_samples: int,
+        *,
+        week: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        week = week or _iso_week()
+        data = self.load()
+        if data["baseline_pr_auc"] is None:
+            data["baseline_pr_auc"] = round(pr_auc, 6)
+        entry = {
+            "week": week,
+            "pr_auc": round(float(pr_auc), 6),
+            "n_samples": int(n_samples),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if extra:
+            entry.update(extra)
+        weekly = [row for row in data["weekly"] if row.get("week") != week]
+        weekly.append(entry)
+        data["weekly"] = sorted(weekly, key=lambda row: row["week"])[-52:]
+        self.save(data)
+        return entry
+
+    def latest_pr_auc(self) -> Optional[float]:
+        weekly = self.load()["weekly"]
+        if not weekly:
+            return None
+        return float(weekly[-1]["pr_auc"])
+
+    def drift_detected(self) -> Tuple[bool, str]:
+        data = self.load()
+        baseline = data.get("baseline_pr_auc")
+        latest = self.latest_pr_auc()
+        if baseline is None or latest is None:
+            return False, "insufficient history"
+        drop = baseline - latest
+        if drop >= self.PR_AUC_DROP_THRESHOLD:
+            return True, f"PR-AUC dropped {drop:.4f} vs baseline ({baseline:.4f}→{latest:.4f})"
+        return False, "within tolerance"
+
+    def weeks_since_retrain(self) -> Optional[int]:
+        data = self.load()
+        last = data.get("last_retrain_week")
+        if not last:
+            return None
+        last_year, last_week = map(int, last.split("-W"))
+        now_year, now_week = map(int, _iso_week().split("-W"))
+        return (now_year - last_year) * 52 + (now_week - last_week)
+
+    def should_retrain(self) -> Tuple[bool, str]:
+        drift, drift_msg = self.drift_detected()
+        if drift:
+            return True, drift_msg
+        elapsed = self.weeks_since_retrain()
+        if elapsed is None:
+            return False, "no prior retrain recorded"
+        if elapsed >= self.RETRAIN_INTERVAL_WEEKS:
+            return True, f"scheduled retrain ({elapsed} weeks since last)"
+        return False, f"next retrain in {self.RETRAIN_INTERVAL_WEEKS - elapsed} week(s)"
+
+    def mark_retrained(self, pr_auc: float) -> None:
+        data = self.load()
+        data["baseline_pr_auc"] = round(float(pr_auc), 6)
+        data["last_retrain_week"] = _iso_week()
+        data["last_retrain_at"] = datetime.now(timezone.utc).isoformat()
+        self.save(data)
+
+    def summary(self) -> str:
+        data = self.load()
+        lines = [
+            f"baseline PR-AUC: {data.get('baseline_pr_auc')}",
+            f"last retrain week: {data.get('last_retrain_week')}",
+        ]
+        for row in data.get("weekly", [])[-8:]:
+            lines.append(f"  {row['week']}: PR-AUC={row['pr_auc']:.4f} (n={row['n_samples']})")
+        drift, msg = self.drift_detected()
+        retrain, retrain_msg = self.should_retrain()
+        lines.append(f"drift: {msg} ({'ALERT' if drift else 'ok'})")
+        lines.append(f"retrain: {retrain_msg} ({'YES' if retrain else 'no'})")
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 10. Hybrid pipeline — model + rule guardrails + SHAP + drift ops
+# ---------------------------------------------------------------------------
+class FraudDetectionPipeline:
+    """Train/evaluate/score with ML model, parallel rules, SHAP reasons, drift tracking."""
+
+    def __init__(
+        self,
+        model_threshold: float = 0.5,
+        metrics_path: Path | str = DEFAULT_METRICS_PATH,
+    ):
+        self.model: Optional[LGBMClassifier] = None
+        self.explainer = None
+        self.threshold = model_threshold
+        self.monitor = DriftMonitor(metrics_path)
+
+    def fit(self, path: str, train_frac: float = 0.8) -> "FraudDetectionPipeline":
+        df = shrink(load(path))
+        g = apply_rule_guardrails(build_features(df))
+        train, test = temporal_split(g)
+        X_tr, y_tr = prepare_matrix(train)
+        X_te, y_te = prepare_matrix(test)
+        self.model = train_model(X_tr, y_tr)
+        self.explainer = build_shap_explainer(self.model, X_tr)
+        self._last_test = test
+        self._last_X_te = X_te
+        self._last_y_te = y_te
+        return self
+
+    def model_scores(self, X: pd.DataFrame) -> np.ndarray:
+        if self.model is None:
+            raise RuntimeError("Pipeline not fitted — call fit() first")
+        return self.model.predict_proba(X)[:, 1]
+
+    def hybrid_scores(self, g: pd.DataFrame, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (model probability, combined score capped at 1.0)."""
+        model_prob = self.model_scores(X)
+        rule_boost = g["rule_guardrail"].astype(float).values * 0.35
+        combined = np.clip(model_prob + rule_boost, 0.0, 1.0)
+        return model_prob, combined
+
+    def predict(
+        self,
+        g: pd.DataFrame,
+        X: pd.DataFrame,
+        *,
+        threshold: Optional[float] = None,
+    ) -> pd.DataFrame:
+        """Flag if model OR any rule guardrail fires."""
+        threshold = self.threshold if threshold is None else threshold
+        g = apply_rule_guardrails(g) if "rule_guardrail" not in g.columns else g
+        model_prob, combined = self.hybrid_scores(g, X)
+        flagged = (model_prob >= threshold) | g["rule_guardrail"].values
+        out = g.copy()
+        out["model_score"] = np.round(model_prob, 4)
+        out["fraud_score"] = np.round(combined, 4)
+        out["is_fraud"] = flagged
+        out["flagged_by_model"] = model_prob >= threshold
+        out["flagged_by_rules"] = g["rule_guardrail"].values
+        if self.explainer is not None:
+            out = explain_alerts(self.explainer, out, model_prob, flagged_mask=flagged)
+        else:
+            out["alert_reason"] = [
+                format_alert_reason([], row.get("rule_reason_codes") or [], rule_guardrail=row["rule_guardrail"])
+                if flagged[i]
+                else ""
+                for i, (_, row) in enumerate(out.iterrows())
+            ]
+        return out
+
+    def evaluate(self, model=None, X_te=None, y_te=None) -> float:
+        model = model or self.model
+        X_te = X_te if X_te is not None else getattr(self, "_last_X_te", None)
+        y_te = y_te if y_te is not None else getattr(self, "_last_y_te", None)
+        if model is None or X_te is None or y_te is None:
+            raise RuntimeError("Nothing to evaluate — fit the pipeline or pass model/X/y")
+        scores = model.predict_proba(X_te)[:, 1]
+        pr_auc = float(average_precision_score(y_te, scores))
+        print(f"\nPR-AUC : {pr_auc:.4f}")
+        print(f"ROC-AUC: {roc_auc_score(y_te, scores):.4f}")
+        for k in (100, 500, 1000):
+            k = min(k, len(y_te))
+            print(f"Precision@{k:<5}: {precision_at_k(y_te, scores, k):.4f}")
+        t, cost = pick_threshold_by_cost(y_te, scores)
+        print(f"\nCost-optimal threshold: {t:.4f} (expected cost={cost:,.0f})")
+        pred = (scores >= t).astype(int)
+        print("\nConfusion matrix:")
+        print(confusion_matrix(y_te, pred))
+        print("\n", classification_report(y_te, pred, digits=4))
+        return pr_auc
+
+    def evaluate_hybrid(self) -> float:
+        test = getattr(self, "_last_test", None)
+        X_te = getattr(self, "_last_X_te", None)
+        y_te = getattr(self, "_last_y_te", None)
+        if test is None or X_te is None or y_te is None:
+            raise RuntimeError("Nothing to evaluate — call fit() first")
+        scored = self.predict(test, X_te)
+        hybrid_prob = scored["fraud_score"].values
+        pr_auc = float(average_precision_score(y_te, hybrid_prob))
+        rule_hits = int(scored["flagged_by_rules"].sum())
+        model_hits = int(scored["flagged_by_model"].sum())
+        both = int((scored["flagged_by_model"] & scored["flagged_by_rules"]).sum())
+        print(f"\nHybrid PR-AUC: {pr_auc:.4f}")
+        print(f"Flags — model: {model_hits}, rules: {rule_hits}, overlap: {both}")
+        flagged = scored[scored["is_fraud"]].head(5)
+        if not flagged.empty and "alert_reason" in flagged.columns:
+            print("\nSample alert reasons:")
+            for _, row in flagged.iterrows():
+                print(f"  {row.get('transaction_id', '?')}: {row['alert_reason']}")
+        return pr_auc
+
+    def record_drift_metrics(self, pr_auc: Optional[float] = None) -> Dict[str, Any]:
+        y_te = getattr(self, "_last_y_te", None)
+        n_samples = len(y_te) if y_te is not None else 0
+        if pr_auc is None:
+            pr_auc = self.evaluate()
+        entry = self.monitor.record_weekly(pr_auc, n_samples)
+        print("\nDrift monitor:")
+        print(self.monitor.summary())
+        return entry
+
+    def maybe_retrain(self, path: str, *, force: bool = False) -> Optional["FraudDetectionPipeline"]:
+        should, reason = self.monitor.should_retrain()
+        if not (force or should):
+            print(f"Skipping retrain: {reason}")
+            return None
+        print(f"Retraining: {reason}")
+        self.fit(path)
+        pr_auc = self.evaluate()
+        self.monitor.mark_retrained(pr_auc)
+        self.monitor.record_weekly(pr_auc, len(self._last_y_te))
+        return self
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main(path):
-    df = shrink(load(path))
-    g = build_features(df)
-    train, test = temporal_split(g)
-    X_tr, y_tr = prepare_matrix(train)
-    X_te, y_te = prepare_matrix(test)
-    model = train_model(X_tr, y_tr)
-    evaluate(model, X_te, y_te)
-    show_importances(model)
-    return model
+    pipeline = FraudDetectionPipeline()
+    pipeline.fit(path)
+    pipeline.evaluate()
+    show_importances(pipeline.model)
+    pipeline.evaluate_hybrid()
+    pipeline.record_drift_metrics()
+    retrain, reason = pipeline.monitor.should_retrain()
+    if retrain:
+        print(f"\nRetrain recommended: {reason}")
+    return pipeline
 
 
 if __name__ == "__main__":

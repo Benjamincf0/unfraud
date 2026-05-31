@@ -1,0 +1,12 @@
+{
+  "baseline_pr_auc": 0.94537,
+  "weekly": [
+    {
+      "week": "2026-W22",
+      "pr_auc": 0.94537,
+      "n_samples": 26000,
+      "recorded_at": "2026-05-31T00:32:07.574968+00:00"
+    }
+  ],
+  "last_retrain_week": null
+}

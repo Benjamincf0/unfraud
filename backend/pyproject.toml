@@ -11,6 +11,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "lightgbm>=4.6.0",
     "scikit-learn>=1.8.0",
+    "shap>=0.46.0",
     "httpx2>=0.0.0",
 ]
 
