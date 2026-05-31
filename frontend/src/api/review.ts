@@ -120,7 +120,18 @@ type BackendReviewLogEntry = {
   reviewer_notes?: string | null
   feedback_reason_codes?: string[]
   feedback_reasoning?: string | null
+  feedback_effects?: BackendReviewFeedbackEffect[]
   reviewed_at: string
+}
+
+type BackendReviewFeedbackEffect = {
+  type: string
+  signal_code: string
+  signal_label: string
+  direction: string
+  previous_multiplier: number
+  next_multiplier: number
+  summary: string
 }
 
 export type TransactionDetailResult = {
@@ -507,6 +518,15 @@ export async function fetchReviewLog(
       action: backendActionToDecision(item.action),
       reviewerNotes:
         item.feedback_reasoning ?? item.reviewer_notes ?? undefined,
+      feedbackEffects: (item.feedback_effects ?? []).map((effect) => ({
+        direction: effect.direction,
+        nextMultiplier: effect.next_multiplier,
+        previousMultiplier: effect.previous_multiplier,
+        signalCode: effect.signal_code,
+        signalLabel: effect.signal_label,
+        summary: effect.summary,
+        type: effect.type,
+      })),
       reviewedAt: item.reviewed_at,
     }))
 }

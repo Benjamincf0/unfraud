@@ -254,11 +254,27 @@ function AuditLog({
                 onClick={() => onSelectTransaction(entry.transactionId)}
                 type="button"
               >
-                <strong>{entry.action}</strong>
-                <span>{entry.transactionId}</span>
-                <time dateTime={entry.reviewedAt}>
-                  {formatAuditTime(entry.reviewedAt)}
-                </time>
+                <span className="audit-log-row-main">
+                  <strong>{entry.action}</strong>
+                  <span>{entry.transactionId}</span>
+                  <time dateTime={entry.reviewedAt}>
+                    {formatAuditTime(entry.reviewedAt)}
+                  </time>
+                </span>
+                {entry.feedbackEffects.length > 0 ? (
+                  <span className="audit-log-effects">
+                    {entry.feedbackEffects.map((effect) => (
+                      <span
+                        className="audit-log-effect"
+                        key={`${entry.transactionId}-${effect.type}-${effect.signalCode}`}
+                      >
+                        {effect.summary}
+                      </span>
+                    ))}
+                  </span>
+                ) : entry.reviewerNotes ? (
+                  <span className="audit-log-note">{entry.reviewerNotes}</span>
+                ) : null}
               </button>
             );
           })

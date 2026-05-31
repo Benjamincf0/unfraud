@@ -278,12 +278,12 @@ export function TransactionDetail({
           transactions={transactions}
         />
 
-        <section className="decision-feedback" aria-label="Decision reason">
+        <section className="decision-feedback" aria-label="Learning update">
           <div className="decision-feedback-header">
-            <strong>Decision reason</strong>
-            <span>Tunes heuristic weights for matching signals</span>
+            <strong>Learning update</strong>
+            <span>Dismiss -15% · Approve +8% · Escalate +18%</span>
           </div>
-          <div className="decision-reason-chips">
+          <div className="decision-signal-list">
             {transaction.reasons.map((reason, index) => {
               const reasonCode = getFeedbackReasonCode(reason, index)
               const selected = decisionFeedback.reasonCodes.includes(reasonCode)
@@ -292,8 +292,8 @@ export function TransactionDetail({
                 <label
                   className={
                     selected
-                      ? 'decision-reason-chip decision-reason-chip-selected'
-                      : 'decision-reason-chip'
+                      ? 'decision-signal-row decision-signal-row-selected'
+                      : 'decision-signal-row'
                   }
                   key={reasonCode}
                 >
@@ -302,7 +302,10 @@ export function TransactionDetail({
                     onChange={() => toggleReasonCode(reasonCode)}
                     type="checkbox"
                   />
-                  <span>{reason.label}</span>
+                  <span>
+                    <strong>{reason.label}</strong>
+                    <span>{reason.detail}</span>
+                  </span>
                 </label>
               )
             })}

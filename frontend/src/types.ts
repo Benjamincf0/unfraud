@@ -58,7 +58,18 @@ export type ReviewLogEntry = {
   transactionId: string
   action: Exclude<ReviewDecision, 'pending'>
   reviewerNotes?: string
+  feedbackEffects: ReviewFeedbackEffect[]
   reviewedAt: string
+}
+
+export type ReviewFeedbackEffect = {
+  type: string
+  signalCode: string
+  signalLabel: string
+  direction: string
+  previousMultiplier: number
+  nextMultiplier: number
+  summary: string
 }
 
 export type CardTransaction = {
