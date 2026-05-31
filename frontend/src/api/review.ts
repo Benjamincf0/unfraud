@@ -85,6 +85,7 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
 type ScoringStatusResponse = {
   heuristic: boolean
+  ml_model_path?: string
   ml_model_available: boolean
 }
 

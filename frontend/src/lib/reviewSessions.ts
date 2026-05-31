@@ -41,6 +41,10 @@ export function saveActiveReviewSession(fileHash: string) {
   window.localStorage.setItem(activeStorageKey, fileHash)
 }
 
+export function clearActiveReviewSession() {
+  window.localStorage.removeItem(activeStorageKey)
+}
+
 function isReviewSession(value: unknown): value is ReviewSession {
   if (!value || typeof value !== 'object') {
     return false
