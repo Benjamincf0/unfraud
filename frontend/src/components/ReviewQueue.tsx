@@ -44,15 +44,6 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalated' },
 ]
 
-const shortcutOptions = [
-  { keys: 'J / ArrowDown', label: 'Next' },
-  { keys: 'K / ArrowUp', label: 'Previous' },
-  { keys: 'A', label: 'Approve' },
-  { keys: 'D', label: 'Dismiss' },
-  { keys: 'E', label: 'Escalate' },
-  { keys: 'U', label: 'Undo' },
-]
-
 const SEARCH_FIELDS: Array<{
   key: SearchFieldKey
   label: string
@@ -565,15 +556,6 @@ export function ReviewQueue({
               })}
             </div>
           ) : null}
-        </div>
-
-        <div className="shortcut-strip" aria-label="Keyboard shortcuts">
-          {shortcutOptions.map((shortcut) => (
-            <span className="shortcut-token" key={shortcut.label}>
-              <kbd>{shortcut.keys}</kbd>
-              <span>{shortcut.label}</span>
-            </span>
-          ))}
         </div>
 
         <div className="review-layout">

@@ -50,7 +50,6 @@ export function CrossCardNetworkPanel({
     <section className="network-panel" aria-label="Cross-card network graph">
       <div className="chart-title-row">
         <strong>Cross-card device/IP network</strong>
-        <span>Cards linked by shared devices and IP addresses</span>
       </div>
 
       <div className="network-legend" aria-hidden="true">

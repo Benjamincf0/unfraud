@@ -18,17 +18,45 @@ type CountryPoint = {
   lon: number
 }
 
+type GoogleLatLng = {
+  lat: number
+  lng: number
+}
+
+type GoogleMap = {
+  fitBounds: (bounds: GoogleLatLngBounds, padding?: number) => void
+}
+
+type GoogleOverlay = {
+  setMap: (map: GoogleMap | null) => void
+}
+
+type GoogleLatLngBounds = {
+  extend: (point: GoogleLatLng) => void
+  isEmpty: () => boolean
+}
+
+type GoogleMapsNamespace = {
+  Circle: new (options: Record<string, unknown>) => GoogleOverlay
+  LatLngBounds: new () => GoogleLatLngBounds
+  Map: new (node: HTMLElement, options: Record<string, unknown>) => GoogleMap
+  Marker: new (options: Record<string, unknown>) => GoogleOverlay
+}
+
 declare global {
   interface Window {
     __googleMapsPromise?: Promise<void>
-    google?: any
+    google?: {
+      maps?: GoogleMapsNamespace
+    }
   }
 }
 
 const GOOGLE_MAPS_API_KEY =
-  (((import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY as string | undefined) ??
-    ((import.meta as any).env?.GOOGLE_MAPS_API_KEY as string | undefined) ??
-    '')
+  import.meta.env.VITE_GOOGLE_MAPS_API_KEY ??
+  import.meta.env.GOOGLE_MAPS_API_KEY ??
+  ''
+const MAP_OVERLAY_COLOR = '#b96a7c'
 
 const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
   US: { lat: 38, lon: -97 },
@@ -132,7 +160,7 @@ export function CardAnalysisPanel({
 
 function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
   const points = useMemo(() => {
-    const counts = useCountryCounts(transactions)
+    const counts = getCountryCounts(transactions)
 
     return counts
       .map(({ country, count }) => {
@@ -154,8 +182,8 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
   }, [transactions])
 
   const mapNodeRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<any>(null)
-  const overlaysRef = useRef<any[]>([])
+  const mapRef = useRef<GoogleMap | null>(null)
+  const overlaysRef = useRef<GoogleOverlay[]>([])
   const [mapError, setMapError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -173,14 +201,16 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
 
     loadGoogleMapsScript(GOOGLE_MAPS_API_KEY)
       .then(() => {
-        if (cancelled || !mapNodeRef.current || !window.google?.maps) {
+        const maps = window.google?.maps
+
+        if (cancelled || !mapNodeRef.current || !maps) {
           return
         }
 
         setMapError(null)
 
         if (!mapRef.current) {
-          mapRef.current = new window.google.maps.Map(mapNodeRef.current, {
+          mapRef.current = new maps.Map(mapNodeRef.current, {
             center: { lat: 20, lng: 0 },
             disableDefaultUI: true,
             gestureHandling: 'cooperative',
@@ -191,31 +221,36 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
           })
         }
 
+        const map = mapRef.current
+        if (!map) {
+          return
+        }
+
         for (const overlay of overlaysRef.current) {
           overlay.setMap(null)
         }
         overlaysRef.current = []
 
-        const bounds = new window.google.maps.LatLngBounds()
+        const bounds = new maps.LatLngBounds()
         const maxCount = Math.max(1, ...points.map((point) => point.count))
 
         for (const point of points) {
           const center = { lat: point.lat, lng: point.lon }
           const intensity = point.count / maxCount
 
-          const circle = new window.google.maps.Circle({
+          const circle = new maps.Circle({
             center,
-            fillColor: '#ff0080',
+            fillColor: MAP_OVERLAY_COLOR,
             fillOpacity: 0.18 + intensity * 0.55,
-            map: mapRef.current,
+            map,
             radius: 60000 + intensity * 340000,
-            strokeColor: '#ff0080',
+            strokeColor: MAP_OVERLAY_COLOR,
             strokeOpacity: 0.7,
             strokeWeight: 1,
           })
 
-          const marker = new window.google.maps.Marker({
-            map: mapRef.current,
+          const marker = new maps.Marker({
+            map,
             position: center,
             title: `${point.country}: ${point.count} transactions`,
           })
@@ -225,7 +260,7 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
         }
 
         if (!bounds.isEmpty()) {
-          mapRef.current.fitBounds(bounds, 40)
+          map.fitBounds(bounds, 40)
         }
       })
       .catch(() => {
@@ -245,7 +280,6 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
     <section className="geo-usage-panel" aria-label="Card country usage map">
       <div className="chart-title-row">
         <strong>Card usage by country</strong>
-        <span>Google Maps heat overlay by merchant country</span>
       </div>
 
       <div className="geo-usage-layout">
@@ -316,7 +350,7 @@ function loadGoogleMapsScript(apiKey: string): Promise<void> {
   return window.__googleMapsPromise
 }
 
-function useCountryCounts(transactions: CardTransaction[]) {
+function getCountryCounts(transactions: CardTransaction[]) {
   const map = new Map<string, number>()
 
   for (const transaction of transactions) {
@@ -353,7 +387,6 @@ function CardHistoryChart({
     <div className="card-history-chart" aria-label="Card transaction history">
       <div className="chart-title-row">
         <strong>Transaction amount over time</strong>
-        <span>Y: amount · X: transaction date</span>
       </div>
 
       <div className="chart-plot">

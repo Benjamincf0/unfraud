@@ -45,7 +45,6 @@ export function UploadCsv({
         <CardHeader>
           <div>
             <h1>Upload Transactions</h1>
-            <p>Send a CSV to the detector, then review the flagged transactions.</p>
           </div>
         </CardHeader>
         <CardContent>
