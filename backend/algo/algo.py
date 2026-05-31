@@ -863,24 +863,138 @@ def format_alert_reason(
 
 
 # ---------------------------------------------------------------------------
-# 8. SHAP explainability — per-alert reason codes
+# 8. SHAP explainability — per-alert reason codes & reviewer breakdown
 # ---------------------------------------------------------------------------
+def _card_amount_ratio(row: pd.Series) -> float:
+    amount = float(row.get("amount", 0) or 0)
+    typical = float(row.get("card_amt_mean_so_far", 0) or 0)
+    if typical <= 0:
+        return 1.0
+    return amount / typical
+
+
+def _feature_signal_type(name: str) -> str:
+    if name in {
+        "device_card_fanout_24h",
+        "ip_card_fanout_24h",
+    }:
+        return "cross_card"
+    if name in {
+        "amt_just_below_100",
+        "amt_just_below_500",
+        "amt_log",
+        "amt_is_round",
+        "amt_card_test",
+    }:
+        return "model"
+    return "per_card"
+
+
+def _feature_reason_label(name: str, row: pd.Series) -> Optional[str]:
+    """Short UI label aligned with heuristic scorer where possible."""
+    labels = {
+        "amt_z_vs_card": "Amount anomaly",
+        "amt_z_vs_category": "Category amount anomaly",
+        "device_change": "New device for card",
+        "merchant_change": "New merchant for card",
+        "cross_border": "Location deviation",
+        "country_hop": "Location deviation",
+        "fast_country_hop": "Location deviation",
+        "ip_card_fanout_24h": "IP shared across cards",
+        "device_card_fanout_24h": "Device shared across cards",
+        "tx_5min": "Velocity spike",
+        "tx_1h": "Velocity spike",
+        "tx_1min": "Velocity spike",
+        "tx_24h": "Velocity spike",
+        "hour_never_seen_for_card": "Atypical hour",
+        "hour_rarity_for_card": "Atypical hour",
+        "distinct_categories_24h": "Unusual category mix",
+        "is_night": "Night transaction",
+        "amt_just_below_100": "Amount just below $100",
+        "amt_just_below_500": "Amount just below $500",
+        "device_missing": "Missing device",
+        "ip_missing": "Missing IP",
+    }
+    if name in labels:
+        return labels[name]
+    if name.startswith("amt_") or name.startswith("tx_") or name.startswith("spend_"):
+        return name.replace("_", " ").title()
+    return None
+
+
+def _feature_reason_detail(name: str, row: pd.Series) -> str:
+    """Reviewer-facing detail without raw SHAP jargon."""
+    val = row.get(name)
+    amount = float(row.get("amount", 0) or 0)
+    if name == "amt_z_vs_card":
+        typical = float(row.get("card_amt_mean_so_far", 0) or 0)
+        ratio = _card_amount_ratio(row)
+        return (
+            f"Amount is {ratio:.2f}× this card's typical spend "
+            f"({typical:.2f})."
+        )
+    if name == "amt_z_vs_category":
+        cat = row.get("merchant_category", "category")
+        return (
+            f"Amount {amount:.2f} is elevated for '{cat}' compared to this "
+            f"card's prior spend in that category."
+        )
+    if name == "device_change" and val == 1:
+        device = row.get("device_id", "unknown")
+        return f"Online or card-not-present flow uses device '{device}' not seen on the prior transaction."
+    if name == "merchant_change" and val == 1:
+        merchant = row.get("merchant_name", "unknown")
+        return f"Merchant changed to '{merchant}' vs this card's previous transaction."
+    if name == "cross_border" and val == 1:
+        return (
+            f"Cross-border ({row.get('cardholder_country')}→"
+            f"{row.get('merchant_country')})."
+        )
+    if name == "fast_country_hop" and val == 1:
+        return "Merchant country changed within the last hour on this card."
+    if name == "country_hop" and val == 1:
+        return (
+            f"Merchant country changed ({row.get('merchant_country')}) "
+            f"vs the card's previous transaction."
+        )
+    if name == "ip_card_fanout_24h" and val is not None and float(val) >= 2:
+        return f"IP appears on {int(val)} distinct cards in the last 24 hours."
+    if name == "device_card_fanout_24h" and val is not None and float(val) >= 2:
+        return f"Device appears on {int(val)} distinct cards in the last 24 hours."
+    if name == "tx_5min" and val is not None and float(val) >= 2:
+        return f"{int(val)} transactions on this card in 5 minutes."
+    if name == "tx_1h" and val is not None and float(val) >= 4:
+        return f"{int(val)} transactions on this card in 1 hour."
+    if name == "hour_never_seen_for_card" and val == 1:
+        return f"First time this card transacts at {int(row.get('hour_of_day', 0)):02d}:00."
+    if name == "hour_rarity_for_card" and val is not None and float(val) >= 0.85:
+        return f"Unusual hour for this card ({int(row.get('hour_of_day', 0)):02d}:00)."
+    if name == "distinct_categories_24h" and val is not None and float(val) >= 3:
+        return f"{int(val)} merchant categories in the last 24 hours on this card."
+    if name == "is_night" and val == 1:
+        return f"Night-time transaction ({int(row.get('hour_of_day', 0)):02d}:00)."
+    if name == "amt_just_below_100" and val == 1:
+        return f"Amount {amount:.2f} is just below a $100 threshold."
+    if name == "amt_just_below_500" and val == 1:
+        return f"Amount {amount:.2f} is just below a $500 threshold."
+    readable = name.replace("_", " ")
+    return f"Model elevated risk from {readable}."
+
+
 def _feature_reason_code(name: str, shap_val: float, row: pd.Series) -> Optional[str]:
     """Map a positively-contributing feature to a short analyst reason."""
     if shap_val <= 0:
         return None
     val = row.get(name)
+    label = _feature_reason_label(name, row)
+    if label:
+        return label
     if name == "amt_z_vs_card" and val is not None:
-        sigma = abs(float(val))
-        if sigma >= 2:
-            return f"amount {sigma:.0f}σ above card norm"
-        return f"amount elevated vs card norm ({sigma:.1f}σ)"
+        ratio = _card_amount_ratio(row)
+        return f"amount {ratio:.1f}× card typical spend"
     if name == "amt_z_vs_category" and val is not None:
-        sigma = abs(float(val))
         cat = row.get("merchant_category", "category")
-        if sigma >= 2:
-            return f"amount {sigma:.0f}σ above {cat} norm"
-        return f"amount elevated vs {cat} norm ({sigma:.1f}σ)"
+        return f"elevated amount for {cat}"
     if name == "distinct_categories_24h" and val is not None and float(val) >= 3:
         return f"{int(val)} merchant categories in 24h"
     if name == "hour_never_seen_for_card" and val == 1:
@@ -978,6 +1092,140 @@ def shap_reason_codes(
     X_row = _prepare_shap_matrix(pd.DataFrame([row]))
     contributions = _extract_shap_contributions(explainer, X_row)[0]
     return _contributions_to_reason_codes(row, contributions, top_k=top_k, min_shap=min_shap)
+
+
+def _feature_to_breakdown_item(
+    name: str,
+    shap_val: float,
+    row: pd.Series,
+) -> Optional[Dict[str, Any]]:
+    """One score_breakdown entry for the review UI (SHAP weight + readable detail)."""
+    if shap_val <= 0:
+        return None
+    label = _feature_reason_label(name, row)
+    if label is None and shap_val < 0.02:
+        return None
+    if label is None:
+        label = name.replace("_", " ").title()
+    detail = _feature_reason_detail(name, row)
+    value: Optional[float] = None
+    baseline: Optional[float] = None
+    if name == "amt_z_vs_card":
+        value = float(row.get("amount", 0) or 0)
+        baseline = float(row.get("card_amt_mean_so_far", 0) or 0)
+    elif name == "amt_z_vs_category":
+        value = float(row.get("amount", 0) or 0)
+    elif name in {"ip_card_fanout_24h", "device_card_fanout_24h"}:
+        raw = row.get(name)
+        if raw is not None:
+            value = float(raw)
+            baseline = 1.0
+    return {
+        "code": name,
+        "label": label,
+        "detail": detail,
+        "weight": round(float(shap_val), 4),
+        "signal_type": _feature_signal_type(name),
+        "value": None if value is None else round(value, 4),
+        "baseline": None if baseline is None else round(baseline, 4),
+    }
+
+
+def _contributions_to_score_breakdown(
+    row: pd.Series,
+    contributions: np.ndarray,
+    *,
+    top_k: int = 5,
+    min_shap: float = 0.01,
+) -> List[Dict[str, Any]]:
+    ranked = sorted(
+        zip(FEATURES, contributions),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    breakdown: List[Dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for name, contrib in ranked:
+        if len(breakdown) >= top_k:
+            break
+        if contrib < min_shap:
+            continue
+        item = _feature_to_breakdown_item(name, float(contrib), row)
+        if not item:
+            continue
+        label_key = item["label"].strip().lower()
+        if label_key in seen_labels:
+            continue
+        seen_labels.add(label_key)
+        breakdown.append(item)
+    return sorted(breakdown, key=lambda signal: signal["weight"], reverse=True)
+
+
+def _rule_codes_to_breakdown(rule_codes: Sequence[str]) -> List[Dict[str, Any]]:
+    """Supplement SHAP with fired guardrails (model-aligned, plain language)."""
+    breakdown: List[Dict[str, Any]] = []
+    for index, code in enumerate(rule_codes):
+        text = str(code).strip()
+        if not text:
+            continue
+        breakdown.append(
+            {
+                "code": f"rule_guardrail_{index}",
+                "label": "Rule guardrail",
+                "detail": text,
+                "weight": 0.12,
+                "signal_type": "model",
+                "value": None,
+                "baseline": None,
+            }
+        )
+    return breakdown
+
+
+def _merge_score_breakdowns(
+    shap_breakdown: List[Dict[str, Any]],
+    rule_breakdown: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    merged = list(shap_breakdown)
+    seen = {item["label"].strip().lower() for item in merged}
+    for item in rule_breakdown:
+        key = item["label"].strip().lower()
+        if key in seen:
+            continue
+        merged.append(item)
+        seen.add(key)
+    return sorted(merged, key=lambda signal: signal["weight"], reverse=True)
+
+
+def shap_score_breakdown_for_rows(
+    explainer,
+    rows: pd.DataFrame,
+    *,
+    top_k: int = 5,
+    min_shap: float = 0.01,
+) -> List[List[Dict[str, Any]]]:
+    """Batch score_breakdown payloads (one list per row, same order as ``rows``)."""
+    if rows.empty:
+        return []
+    contributions = _extract_shap_contributions(explainer, _prepare_shap_matrix(rows))
+    breakdowns: List[List[Dict[str, Any]]] = []
+    for position, (_, row) in enumerate(rows.iterrows()):
+        shap_items = _contributions_to_score_breakdown(
+            row,
+            contributions[position],
+            top_k=top_k,
+            min_shap=min_shap,
+        )
+        rule_codes = row.get("rule_reason_codes") or []
+        if isinstance(rule_codes, str):
+            rule_codes = (
+                json.loads(rule_codes)
+                if rule_codes.startswith("[")
+                else [rule_codes]
+            )
+        rule_items = _rule_codes_to_breakdown(rule_codes) if bool(row.get("rule_guardrail")) else []
+        breakdowns.append(_merge_score_breakdowns(shap_items, rule_items))
+    return breakdowns
 
 
 def explain_alerts(
@@ -1210,6 +1458,11 @@ class FraudDetectionPipeline:
             self._threshold_tuned_on_val = True
         return self
 
+    def ensure_explainer(self) -> None:
+        """Build SHAP explainer lazily (needed after ``load()`` for API scoring)."""
+        if self.explainer is None and self.model is not None:
+            self.explainer = build_shap_explainer(self.model)
+
     def model_scores(self, X: pd.DataFrame) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Pipeline not fitted — call fit() first")
@@ -1363,7 +1616,7 @@ class FraudDetectionPipeline:
         pipeline.threshold = float(artifact["threshold"])
         pipeline._threshold_from_curve = False
         pipeline._threshold_tuned_on_val = True
-        pipeline.explainer = None
+        pipeline.ensure_explainer()
         return pipeline
 
 

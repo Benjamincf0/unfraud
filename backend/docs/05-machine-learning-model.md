@@ -114,10 +114,12 @@ The API loads this file once and caches it in memory when `use_model=true`.
 ## Serving path (`ml_fraud_scorer.py`)
 
 1. Normalize upload CSV (timestamps, optional columns).
-2. Load pipeline from disk.
+2. Load pipeline from disk (SHAP explainer built on first use).
 3. Build features + guardrails (same as training).
 4. Predict probabilities and hybrid flags.
-5. Map output columns to the same JSON shape the heuristic scorer uses so the **frontend does not change**.
+5. For **flagged** rows, build `score_breakdown` from **SHAP** (readable labels like “Amount is 3.2× typical spend”) plus rule guardrail lines when fired.
+6. Fall back to heuristic breakdown only if SHAP returns nothing; keep heuristic `card_baseline` / cross-card JSON for context charts.
+7. Map output columns to the same JSON shape the heuristic scorer uses so the **frontend does not change**.
 
 ## Drift monitoring (operations concept)
 

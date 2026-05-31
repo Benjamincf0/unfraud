@@ -36,7 +36,7 @@ def _review_csv() -> pd.DataFrame:
     )
 
 
-def test_ml_scoring_uses_heuristic_explanations(monkeypatch):
+def test_ml_scoring_uses_shap_explanations_for_flagged(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         csv_path = os.path.join(tmp, "train.csv")
         model_path = os.path.join(tmp, "fraud_model.pkl")
@@ -54,15 +54,24 @@ def test_ml_scoring_uses_heuristic_explanations(monkeypatch):
         heuristic = simple_fraud_detection(df)
         scored = ml_fraud_detection(df, model_path=model_path)
 
-        assert scored["score_breakdown"].tolist() == heuristic["score_breakdown"].tolist()
         assert scored["card_baseline_json"].tolist() == heuristic["card_baseline_json"].tolist()
         assert scored["cross_card_signals_json"].tolist() == heuristic["cross_card_signals_json"].tolist()
 
         outlier = scored[scored["transaction_id"] == "tx_004"].iloc[0]
+        assert bool(outlier["is_fraud"])
         breakdown = json.loads(outlier["score_breakdown"])
-        assert any("Amount anomaly" in item.get("label", "") for item in breakdown)
-        assert "Model feature" not in outlier["fraud_reasons"]
-        assert "sigma" not in outlier["fraud_reasons"].lower()
+        assert breakdown
+        assert all("weight" in item and "detail" in item for item in breakdown)
+        assert "sigma" not in json.dumps(breakdown).lower()
+        assert "σ" not in json.dumps(breakdown)
+        labels = {item.get("label", "") for item in breakdown}
+        assert labels
+        assert breakdown != json.loads(
+            heuristic.loc[heuristic["transaction_id"] == "tx_004", "score_breakdown"].iloc[0]
+        ) or any(item.get("code") in {"amt_z_vs_card", "amt_z_vs_category"} for item in breakdown)
+
+        benign = scored[scored["transaction_id"] == "tx_001"].iloc[0]
+        assert json.loads(benign["score_breakdown"]) == []
 
 
 def test_ml_scoring_decisions_come_from_model(monkeypatch):
