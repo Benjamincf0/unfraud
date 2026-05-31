@@ -3,7 +3,12 @@ import { CrossCardNetworkPanel } from './CrossCardNetworkPanel'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
-import type { CardAnalysis, ReviewDecision, TransactionFlag } from '../../types'
+import type {
+  CardAnalysis,
+  ReviewDecision,
+  SearchFieldKey,
+  TransactionFlag,
+} from '../../types'
 
 type TransactionDetailProps = {
   cardAnalysis: CardAnalysis | null
@@ -13,6 +18,7 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onFilterByField: (payload: { field: SearchFieldKey; value: string }) => void
   onFocusRelatedTransactions: (payload: {
     label: string
     transactionIds: string[]
@@ -28,6 +34,7 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
+  onFilterByField,
   onFocusRelatedTransactions,
   onSelectTransaction,
   reviewableTransactionIds,
@@ -38,9 +45,26 @@ export function TransactionDetail({
     <Card className="transaction-detail">
       <CardHeader>
         <div>
-          <h2>{transaction.merchantName}</h2>
+          <h2>
+            <FieldLink
+              field="merchant_name"
+              onFilterByField={onFilterByField}
+              value={transaction.merchantName}
+            />
+          </h2>
           <p>
-            {transaction.transactionId} · {formatDateTime(transaction.timestamp)}
+            <FieldLink
+              field="transaction_id"
+              onFilterByField={onFilterByField}
+              value={transaction.transactionId}
+            />
+            <span> · </span>
+            <FieldLink
+              displayValue={formatDateTime(transaction.timestamp)}
+              field="timestamp"
+              onFilterByField={onFilterByField}
+              value={transaction.timestamp}
+            />
           </p>
         </div>
         <span className="risk-label">{transaction.label}</span>
@@ -48,36 +72,91 @@ export function TransactionDetail({
 
       <CardContent>
         <div className="amount-row">
-          <span>{formatCurrency(transaction.amount)}</span>
+          <span>
+            <FieldLink
+              displayValue={formatCurrency(transaction.amount)}
+              field="amount"
+              onFilterByField={onFilterByField}
+              value={String(transaction.amount)}
+            />
+          </span>
           <span>{Math.round(transaction.score * 100)} risk</span>
         </div>
 
         <dl className="detail-grid">
           <div>
             <dt>Card</dt>
-            <dd>{transaction.cardId}</dd>
+            <dd>
+              <FieldLink
+                field="card_id"
+                onFilterByField={onFilterByField}
+                value={transaction.cardId}
+              />
+            </dd>
           </div>
           <div>
             <dt>Channel</dt>
-            <dd>{transaction.channel}</dd>
+            <dd>
+              <FieldLink
+                field="channel"
+                onFilterByField={onFilterByField}
+                value={transaction.channel}
+              />
+            </dd>
           </div>
           <div>
             <dt>Category</dt>
-            <dd>{transaction.merchantCategory}</dd>
+            <dd>
+              <FieldLink
+                field="merchant_category"
+                onFilterByField={onFilterByField}
+                value={transaction.merchantCategory}
+              />
+            </dd>
           </div>
           <div>
             <dt>Countries</dt>
             <dd>
-              {transaction.cardholderCountry} to {transaction.merchantCountry}
+              <FieldLink
+                field="cardholder_country"
+                onFilterByField={onFilterByField}
+                value={transaction.cardholderCountry}
+              />
+              <span> to </span>
+              <FieldLink
+                field="merchant_country"
+                onFilterByField={onFilterByField}
+                value={transaction.merchantCountry}
+              />
             </dd>
           </div>
           <div>
             <dt>Device</dt>
-            <dd>{transaction.deviceId ?? 'Not present'}</dd>
+            <dd>
+              {transaction.deviceId ? (
+                <FieldLink
+                  field="device_id"
+                  onFilterByField={onFilterByField}
+                  value={transaction.deviceId}
+                />
+              ) : (
+                'Not present'
+              )}
+            </dd>
           </div>
           <div>
             <dt>IP</dt>
-            <dd>{transaction.ipAddress ?? 'Not present'}</dd>
+            <dd>
+              {transaction.ipAddress ? (
+                <FieldLink
+                  field="ip_address"
+                  onFilterByField={onFilterByField}
+                  value={transaction.ipAddress}
+                />
+              ) : (
+                'Not present'
+              )}
+            </dd>
           </div>
         </dl>
 
@@ -114,11 +193,23 @@ export function TransactionDetail({
             </div>
             <div>
               <dt>Countries</dt>
-              <dd>{transaction.cardContext.usualCountries.join(', ')}</dd>
+              <dd>
+                <FieldLinkList
+                  field="merchant_country"
+                  onFilterByField={onFilterByField}
+                  values={transaction.cardContext.usualCountries}
+                />
+              </dd>
             </div>
             <div>
               <dt>Categories</dt>
-              <dd>{transaction.cardContext.usualCategories.join(', ')}</dd>
+              <dd>
+                <FieldLinkList
+                  field="merchant_category"
+                  onFilterByField={onFilterByField}
+                  values={transaction.cardContext.usualCategories}
+                />
+              </dd>
             </div>
           </dl>
         </section>
@@ -166,5 +257,56 @@ export function EmptyTransactionDetail() {
         <p className="empty-copy">Select a transaction to review.</p>
       </CardContent>
     </Card>
+  )
+}
+
+function FieldLink({
+  displayValue,
+  field,
+  onFilterByField,
+  value,
+}: {
+  displayValue?: string
+  field: SearchFieldKey
+  onFilterByField: (payload: { field: SearchFieldKey; value: string }) => void
+  value: string
+}) {
+  return (
+    <button
+      className="field-link"
+      onClick={() => onFilterByField({ field, value })}
+      type="button"
+    >
+      {displayValue ?? value}
+    </button>
+  )
+}
+
+function FieldLinkList({
+  field,
+  onFilterByField,
+  values,
+}: {
+  field: SearchFieldKey
+  onFilterByField: (payload: { field: SearchFieldKey; value: string }) => void
+  values: string[]
+}) {
+  if (values.length === 0) {
+    return <>None</>
+  }
+
+  return (
+    <>
+      {values.map((value, index) => (
+        <span className="field-link-list-item" key={value}>
+          {index > 0 ? <span>, </span> : null}
+          <FieldLink
+            field={field}
+            onFilterByField={onFilterByField}
+            value={value}
+          />
+        </span>
+      ))}
+    </>
   )
 }

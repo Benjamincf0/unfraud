@@ -1,5 +1,18 @@
 export type ReviewDecision = 'pending' | 'approved' | 'dismissed' | 'escalated'
 
+export type SearchFieldKey =
+  | 'transaction_id'
+  | 'timestamp'
+  | 'card_id'
+  | 'amount'
+  | 'merchant_name'
+  | 'merchant_category'
+  | 'channel'
+  | 'cardholder_country'
+  | 'merchant_country'
+  | 'device_id'
+  | 'ip_address'
+
 export type RiskReason = {
   id: string
   label: string

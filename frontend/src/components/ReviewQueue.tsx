@@ -7,22 +7,14 @@ import { Input } from './ui/input'
 import { Tabs } from './ui/tabs'
 import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
 import type { ReviewSession } from '../lib/reviewSessions'
-import type { DecisionAction, ReviewDecision, TransactionFlag } from '../types'
+import type {
+  DecisionAction,
+  ReviewDecision,
+  SearchFieldKey,
+  TransactionFlag,
+} from '../types'
 
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
-
-type SearchFieldKey =
-  | 'transaction_id'
-  | 'timestamp'
-  | 'card_id'
-  | 'amount'
-  | 'merchant_name'
-  | 'merchant_category'
-  | 'channel'
-  | 'cardholder_country'
-  | 'merchant_country'
-  | 'device_id'
-  | 'ip_address'
 
 type SearchMode = 'all' | 'single' | 'custom'
 
@@ -299,6 +291,34 @@ export function ReviewQueue({
       setNetworkFocus({ label, transactionIds: ids })
       if (firstVisible) {
         setActiveId(firstVisible.transactionId)
+      }
+    },
+    [transactions],
+  )
+
+  const filterByTransactionField = useCallback(
+    ({ field, value }: { field: SearchFieldKey; value: string }) => {
+      const queryValue = value.trim()
+
+      if (!queryValue) {
+        return
+      }
+
+      const firstMatch = transactions.find((transaction) => {
+        const searchField = SEARCH_FIELD_MAP.get(field)
+        return searchField?.values(transaction).some((candidate) =>
+          candidate.toLowerCase().includes(queryValue.toLowerCase()),
+        )
+      })
+
+      setFilter('all')
+      setNetworkFocus(null)
+      setSearchMode('single')
+      setSingleField(field)
+      setQuery(queryValue)
+
+      if (firstMatch) {
+        setActiveId(firstMatch.transactionId)
       }
     },
     [transactions],
@@ -612,6 +632,7 @@ export function ReviewQueue({
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
+              onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
