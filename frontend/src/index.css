@@ -315,10 +315,18 @@ button:disabled {
 }
 
 .tuning-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 10px;
+}
+
+.tuning-controls-sliders {
   display: grid;
+  flex: 1 1 auto;
   grid-template-columns: repeat(2, minmax(180px, 280px));
   gap: 10px 16px;
-  padding-bottom: 10px;
+  min-width: 0;
 }
 
 .tuning-control {
@@ -444,8 +452,10 @@ button:disabled {
 
 .scoring-toggle {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
   color: #a8a8b3;
   font-size: 13px;
 }
@@ -1427,9 +1437,18 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .tuning-controls,
+  .tuning-controls {
+    flex-wrap: wrap;
+  }
+
+  .tuning-controls-sliders,
   .tuning-control {
     grid-template-columns: 1fr;
+  }
+
+  .scoring-toggle {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .tuning-control strong {

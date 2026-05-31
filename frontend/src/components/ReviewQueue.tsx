@@ -825,16 +825,6 @@ export function ReviewQueue({
             </span>
           </div>
           <div className="topbar-actions">
-            <label className="scoring-toggle">
-              <span>Heuristic</span>
-              <input
-                checked={useModel}
-                disabled={!reviewData.mlModelAvailable || !reviewData.model}
-                onChange={(event) => handleUseModelChange(event.target.checked)}
-                type="checkbox"
-              />
-              <span>ML model</span>
-            </label>
             {sessions.length > 1 ? (
               <select
                 aria-label="Switch result set"
@@ -964,41 +954,55 @@ export function ReviewQueue({
           />
 
           <div className="tuning-controls" aria-label="Queue tuning controls">
-            <label className="tuning-control">
-              <span>
-                Risk threshold (
-                {sortModeOptions.find((option) => option.value === sortMode)?.label}
-                )
-              </span>
-              <Slider
-                aria-label="Risk threshold"
-                max={95}
-                min={0}
+            <div className="tuning-controls-sliders">
+              <label className="tuning-control">
+                <span>
+                  Risk threshold (
+                  {sortModeOptions.find((option) => option.value === sortMode)?.label}
+                  )
+                </span>
+                <Slider
+                  aria-label="Risk threshold"
+                  max={95}
+                  min={0}
+                  onChange={(event) =>
+                    updateRiskTuning(sortMode, {
+                      riskThreshold: Number(event.target.value),
+                    })
+                  }
+                  step={5}
+                  value={activeTuning.riskThreshold}
+                />
+                <strong>{Math.round(effectiveRiskThreshold)}%</strong>
+              </label>
+              <label className="tuning-control">
+                <span>False positive cost</span>
+                <Slider
+                  aria-label="False positive cost"
+                  max={9}
+                  min={1}
+                  onChange={(event) =>
+                    updateRiskTuning(sortMode, {
+                      falsePositiveCost: Number(event.target.value),
+                    })
+                  }
+                  step={1}
+                  value={activeTuning.falsePositiveCost}
+                />
+                <strong>{activeTuning.falsePositiveCost}</strong>
+              </label>
+            </div>
+            <label className="scoring-toggle">
+              <span>Heuristic</span>
+              <input
+                checked={useModel}
+                disabled={!reviewData.mlModelAvailable || !reviewData.model}
                 onChange={(event) =>
-                  updateRiskTuning(sortMode, {
-                    riskThreshold: Number(event.target.value),
-                  })
+                  handleUseModelChange(event.target.checked)
                 }
-                step={5}
-                value={activeTuning.riskThreshold}
+                type="checkbox"
               />
-              <strong>{Math.round(effectiveRiskThreshold)}%</strong>
-            </label>
-            <label className="tuning-control">
-              <span>False positive cost</span>
-              <Slider
-                aria-label="False positive cost"
-                max={9}
-                min={1}
-                onChange={(event) =>
-                  updateRiskTuning(sortMode, {
-                    falsePositiveCost: Number(event.target.value),
-                  })
-                }
-                step={1}
-                value={activeTuning.falsePositiveCost}
-              />
-              <strong>{activeTuning.falsePositiveCost}</strong>
+              <span>ML model</span>
             </label>
           </div>
 
