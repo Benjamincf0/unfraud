@@ -692,6 +692,26 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.geo-country-row:hover .geo-country-labels,
+.geo-country-row:focus-visible .geo-country-labels {
+  color: #f0f0f0;
+}
+
+.geo-country-row:hover .geo-country-track,
+.geo-country-row:focus-visible .geo-country-track {
+  border-color: #4d8f76;
+}
+
+.geo-country-row:focus-visible {
+  outline: 2px solid #00ff9f;
+  outline-offset: 2px;
 }
 
 .geo-country-labels {

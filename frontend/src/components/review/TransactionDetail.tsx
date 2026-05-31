@@ -18,6 +18,7 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onFilterCardCountry: (payload: { cardId: string; country: string }) => void
   onFilterByField: (payload: { field: SearchFieldKey; value: string }) => void
   onFocusRelatedTransactions: (payload: {
     label: string
@@ -34,6 +35,7 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
+  onFilterCardCountry,
   onFilterByField,
   onFocusRelatedTransactions,
   onSelectTransaction,
@@ -218,6 +220,7 @@ export function TransactionDetail({
           analysis={cardAnalysis}
           error={cardAnalysisError}
           isLoading={isCardAnalysisLoading}
+          onFilterCardCountry={onFilterCardCountry}
           onSelectTransaction={onSelectTransaction}
           reviewableTransactionIds={reviewableTransactionIds}
           transactionId={transaction.transactionId}
