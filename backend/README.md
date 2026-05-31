@@ -1,84 +1,40 @@
 # Fraud Detection Backend
 
-This is the FastAPI backend for the fraud detection application.
+FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, support human review, and export enriched results.
 
-## Endpoints
+## Documentation (start here)
 
-### File Upload
-- **POST /upload** - Upload a CSV file and receive a hash identifier
-  - Returns: `{file_hash: str, message: str}`
+**Non-technical and full-system guides:** [docs/README.md](docs/README.md)
 
-### Analysis Endpoints
-- **GET /analysis/all/{file_hash}` - Get fraud analysis for all transactions
-  - Returns: List of enriched `[FraudAnalysis]` objects with explainable score payloads
-- **GET /analysis/user/{file_hash}/{card_id}` - Get fraud analysis for specific card/user
-  - Returns: Per-card slice of globally computed analysis (keeps cross-card signals intact)
-- **GET /analysis/ip/{file_hash}/{ip_address}` - Get fraud analysis for specific IP address
-  - Returns: IP-specific slice of globally computed analysis
+| Guide | Topic |
+|-------|--------|
+| [docs/01-overview.md](docs/01-overview.md) | Purpose, two scorers, architecture |
+| [docs/02-data-and-workflow.md](docs/02-data-and-workflow.md) | CSV format, upload → review → export |
+| [docs/03-api-guide.md](docs/03-api-guide.md) | HTTP API in plain language |
+| [docs/04-heuristic-scoring.md](docs/04-heuristic-scoring.md) | Default rules-based detector |
+| [docs/05-machine-learning-model.md](docs/05-machine-learning-model.md) | LightGBM, hybrid scoring, SHAP |
+| [docs/06-training-and-tuning.md](docs/06-training-and-tuning.md) | Training, metrics, Optuna |
+| [docs/07-operations.md](docs/07-operations.md) | Run, test, artifacts, troubleshooting |
 
-### Review Endpoints
-- **POST /review/{file_hash}/{transaction_id}/{action}` - Review a transaction
-  - Actions: `approve`, `dismiss`, `escalate`, `pending`
-  - Body: `{action: str, reviewer_notes?: str}`
-  - Returns: Confirmation message
-- **GET /review/{file_hash}/audit` - Get review actions for the current upload
-  - Returns: List of transaction decisions with timestamps
+## Quick reference — endpoints
 
-### Export Endpoint
-- **GET /export/{file_hash}` - Export analyzed transactions as CSV
-  - Returns: CSV file with original data plus fraud analysis columns
-  - Columns added: `is_fraud`, `fraud_score`, `fraud_reasons`, review metadata
+### File upload
+- **POST /upload** — Upload CSV → `{file_hash, message}`
 
-## Pydantic Models
+### Analysis (`?use_model=true` for ML)
+- **GET /analysis/all/{file_hash}** — All transactions with explainability payloads
+- **GET /analysis/user/{file_hash}/{card_id}** — Per-card history
+- **GET /analysis/ip/{file_hash}/{ip_address}** — Per-IP slice
 
-### UploadResponse
-```python
-class UploadResponse(BaseModel):
-    file_hash: str
-    message: str
-```
+### Review
+- **POST /review/{file_hash}/{transaction_id}/{action}** — `approve` | `dismiss` | `escalate` | `pending`
+- **GET /review/{file_hash}/audit** — Audit trail
+- **GET /review-log/{file_hash}** — Review log
 
-### FraudAnalysis
-```python
-class FraudAnalysis(BaseModel):
-    transaction_id: str
-    timestamp: str
-    card_id: str
-    amount: float
-    merchant_name: str
-    merchant_category: str
-    channel: str
-    is_fraud: bool
-    fraud_score: float
-    reasons: List[str]
-    score_breakdown: List[Dict[str, Any]]         # weighted explainability objects
-    card_baseline: Dict[str, Any]                 # per-card baseline snapshot
-    cross_card_signals: Dict[str, Any]            # fanout/burst metrics
-    graph_features: Dict[str, float]              # numeric frontend graph inputs
-    card_amount_series: List[Dict[str, Any]]      # per-card historical points
-```
-
-### ReviewAction
-```python
-class ReviewAction(BaseModel):
-    action: str  # approve, dismiss, escalate
-    reviewer_notes: Optional[str] = None
-```
-
-## Fraud Detection Logic
-
-The detector combines:
-1. **Per-card anomaly scoring**
-   - Amount deviation vs card historical median and z-score
-   - Novel category/device/IP/country for that card
-2. **Cross-card aggregation**
-   - Device reused across multiple cards
-   - IP reused across multiple cards
-   - Merchant burst behavior (velocity + unique cards in short windows)
-3. **Explainable weighted score**
-   - Final score in `[0,1]`
-   - Reason-level `weight`, `signal_type`, `value`, and `baseline` for auditability
-   - `fraud_reasons` remains available for backward compatibility
+### Other
+- **GET /** — Health
+- **GET /scoring/status** — Heuristic vs ML availability
+- **GET /export/{file_hash}** — Download analyzed CSV
 
 ## Installation
 
@@ -86,49 +42,43 @@ The detector combines:
 uv sync
 ```
 
-## Running the Server
+## Running the server
 
 ```bash
 uvicorn main:app --reload
 ```
 
+Or from repo root: `make dev`
+
+## Train ML model (optional)
+
+```bash
+uv run python -m scripts.train_fraud_model
+```
+
+Writes `algo/ops/fraud_model.pkl`. See [docs/06-training-and-tuning.md](docs/06-training-and-tuning.md).
+
 ## Testing
 
-Run the test suite:
 ```bash
 uv run --extra test python -m pytest -q
 ```
 
 ## Offline hyperparameter tuning (optional)
 
-LightGBM search is **not** wired into `FraudDetectionPipeline.fit()`. Run it manually when you want to refine validation PR-AUC, then integrate saved params later.
-
 ```bash
-cd backend
 uv sync --extra tune
 uv run --extra tune python -m algo.tune_lgbm fraudTrain_part1.csv --n-trials 40
 ```
 
-Outputs:
+See [docs/06-training-and-tuning.md](docs/06-training-and-tuning.md).
 
-- `algo/ops/best_lgbm_params.json` — best params + metadata (commit if you want reproducible training)
-- `algo/ops/optuna.db` — study history for resume (gitignored)
+## Export challenge CSV
 
-To use tuned params in training (when you choose to):
-
-```python
-from algo.lgbm_params import load_lgbm_params
-from algo.algo import train_model
-
-model = train_model(X_tr, y_tr, params=load_lgbm_params())
-```
-
-Ephemeral study (no SQLite): add `--no-storage`.
-
-## Exporting the challenge CSV
-
-From the repo root:
+From repo root:
 
 ```bash
 make export
 ```
+
+Uses the **heuristic** scorer on `transactions.csv`.
