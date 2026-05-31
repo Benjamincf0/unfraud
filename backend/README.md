@@ -18,14 +18,16 @@ This is the FastAPI backend for the fraud detection application.
 
 ### Review Endpoints
 - **POST /review/{file_hash}/{transaction_id}/{action}` - Review a transaction
-  - Actions: `approve`, `dismiss`, `escalate`
+  - Actions: `approve`, `dismiss`, `escalate`, `pending`
   - Body: `{action: str, reviewer_notes?: str}`
   - Returns: Confirmation message
+- **GET /review/{file_hash}/audit` - Get review actions for the current upload
+  - Returns: List of transaction decisions with timestamps
 
 ### Export Endpoint
 - **GET /export/{file_hash}` - Export analyzed transactions as CSV
   - Returns: CSV file with original data plus fraud analysis columns
-  - Columns added: `is_fraud`, `fraud_score`, `fraud_reasons`
+  - Columns added: `is_fraud`, `fraud_score`, `fraud_reasons`, review metadata
 
 ## Pydantic Models
 
@@ -94,12 +96,13 @@ uvicorn main:app --reload
 
 Run the test suite:
 ```bash
-python -c "
-import sys
-sys.path.insert(0, '.')
-from main import app
-from fastapi.testclient import TestClient
-client = TestClient(app)
-# Add your test code here
-"
+uv run --extra test python -m pytest -q
+```
+
+## Exporting the challenge CSV
+
+From the repo root:
+
+```bash
+make export
 ```

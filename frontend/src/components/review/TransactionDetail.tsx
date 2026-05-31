@@ -78,7 +78,14 @@ export function TransactionDetail({
             {transaction.reasons.map((reason) => (
               <div className="reason-row" key={reason.id}>
                 <div>
-                  <strong>{reason.label}</strong>
+                  <strong>
+                    {reason.label}
+                    {reason.signalType ? (
+                      <span className="reason-signal-type">
+                        {reason.signalType.replace('_', ' ')}
+                      </span>
+                    ) : null}
+                  </strong>
                   <p>{reason.detail}</p>
                 </div>
                 <span>{reason.weight}</span>

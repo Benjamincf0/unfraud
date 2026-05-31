@@ -54,7 +54,8 @@ export function ReviewQueue({
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
-  const [threshold, setThreshold] = useState(55)
+  const [falsePositiveCost, setFalsePositiveCost] = useState(2)
+  const [missedFraudCost, setMissedFraudCost] = useState(10)
   const [history, setHistory] = useState<DecisionAction[]>([])
   const {
     isError: reviewSyncFailed,
@@ -65,9 +66,11 @@ export function ReviewQueue({
 
   const visibleTransactions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
+    const threshold =
+      falsePositiveCost / Math.max(falsePositiveCost + missedFraudCost, 1)
 
     return transactions.filter((transaction) => {
-      const scorePasses = transaction.score * 100 >= threshold
+      const scorePasses = transaction.score >= threshold
       const filterPasses =
         filter === 'all' ? true : transaction.decision === filter
       const queryPasses = normalizedQuery
@@ -85,7 +88,17 @@ export function ReviewQueue({
 
       return scorePasses && filterPasses && queryPasses
     })
-  }, [filter, query, threshold, transactions])
+  }, [falsePositiveCost, filter, missedFraudCost, query, transactions])
+
+  const costThreshold = useMemo(
+    () =>
+      Math.round(
+        (falsePositiveCost /
+          Math.max(falsePositiveCost + missedFraudCost, 1)) *
+          100,
+      ),
+    [falsePositiveCost, missedFraudCost],
+  )
 
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
@@ -138,7 +151,15 @@ export function ReviewQueue({
         return
       }
 
+      const activeIndex = visibleTransactions.findIndex(
+        (item) => item.transactionId === transactionId,
+      )
+      const nextActiveTransaction =
+        visibleTransactions[activeIndex + 1] ??
+        visibleTransactions[activeIndex - 1] ??
+        null
       const action = {
+        actedAt: new Date().toISOString(),
         nextDecision,
         previousDecision: transaction.decision,
         transactionId,
@@ -152,13 +173,14 @@ export function ReviewQueue({
         ),
       )
       setHistory((previous) => [action, ...previous])
+      setActiveId(nextActiveTransaction?.transactionId ?? '')
       syncReviewDecision({
         decision: nextDecision,
         fileHash,
         transactionId,
       })
     },
-    [fileHash, syncReviewDecision, transactions],
+    [fileHash, syncReviewDecision, transactions, visibleTransactions],
   )
 
   const undo = useCallback(() => {
@@ -177,7 +199,12 @@ export function ReviewQueue({
     )
     setHistory(rest)
     setActiveId(lastAction.transactionId)
-  }, [history])
+    syncReviewDecision({
+      decision: lastAction.previousDecision,
+      fileHash,
+      transactionId: lastAction.transactionId,
+    })
+  }, [fileHash, history, syncReviewDecision])
 
   const selectTransactionFromHistory = useCallback(
     (transactionId: string) => {
@@ -191,9 +218,6 @@ export function ReviewQueue({
 
       setFilter('all')
       setQuery('')
-      setThreshold((currentThreshold) =>
-        Math.min(currentThreshold, Math.floor(transaction.score * 100)),
-      )
       setActiveId(transactionId)
     },
     [transactions],
@@ -275,7 +299,7 @@ export function ReviewQueue({
             <strong>{queueStats.pending}</strong>
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
-            <span>{transactions.length} flagged</span>
+            <span>{transactions.length} candidates</span>
             {reviewSyncFailed ? <span>Sync failed</span> : null}
           </div>
           <div className="topbar-actions">
@@ -321,16 +345,34 @@ export function ReviewQueue({
             value={filter}
           />
           <label className="threshold-control" htmlFor="review-threshold">
-            <span>Threshold</span>
+            <span>False alarm cost</span>
             <Slider
               id="review-threshold"
-              max={95}
-              min={0}
-              onChange={(event) => setThreshold(Number(event.target.value))}
-              value={threshold}
+              max={20}
+              min={1}
+              onChange={(event) =>
+                setFalsePositiveCost(Number(event.target.value))
+              }
+              value={falsePositiveCost}
             />
-            <strong>{threshold}%</strong>
+            <strong>{falsePositiveCost}</strong>
           </label>
+          <label className="threshold-control" htmlFor="missed-fraud-cost">
+            <span>Missed fraud cost</span>
+            <Slider
+              id="missed-fraud-cost"
+              max={100}
+              min={1}
+              onChange={(event) =>
+                setMissedFraudCost(Number(event.target.value))
+              }
+              value={missedFraudCost}
+            />
+            <strong>{missedFraudCost}</strong>
+          </label>
+          <div className="cost-threshold" aria-live="polite">
+            Review cutoff {costThreshold}% risk
+          </div>
         </div>
 
         <div className="shortcut-strip" aria-label="Keyboard shortcuts">
@@ -367,6 +409,29 @@ export function ReviewQueue({
             <EmptyTransactionDetail />
           )}
         </div>
+
+        {history.length > 0 ? (
+          <section className="audit-log" aria-label="Review audit log">
+            <div className="audit-log-header">
+              <strong>Audit log</strong>
+              <span>{history.length} session actions</span>
+            </div>
+            <div className="audit-log-list">
+              {history.slice(0, 8).map((action) => (
+                <button
+                  className="audit-log-row"
+                  key={`${action.transactionId}-${action.actedAt}`}
+                  onClick={() => selectTransactionFromHistory(action.transactionId)}
+                  type="button"
+                >
+                  <span>{action.transactionId}</span>
+                  <strong>{action.nextDecision}</strong>
+                  <time>{new Date(action.actedAt).toLocaleTimeString()}</time>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </main>
     </div>
   )

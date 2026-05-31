@@ -47,6 +47,10 @@ decisions are synced with:
 POST /review/{file_hash}/{transaction_id}/{action}
 ```
 
+Undo sends the prior decision back to the backend. When the prior state is
+pending, the frontend calls the same endpoint with `pending`, which clears the
+review record for that transaction.
+
 Uploaded result metadata is saved in `localStorage` by `file_hash`. On reload,
 the app restores the active result by fetching:
 
@@ -69,4 +73,7 @@ same CSV to be uploaded again.
 
 ## Frontend scope
 
-The model, detector, CSV parsing, and updated flagged CSV are owned by the backend/model agents. This frontend keeps the API boundary explicit and avoids duplicating fraud detection logic in the browser.
+The model, detector, and updated flagged CSV are owned by the backend. The
+frontend keeps fraud detection at the API boundary, consumes backend
+explainability payloads, and limits local state to active review workflow,
+filters, cost tuning, and session audit display.

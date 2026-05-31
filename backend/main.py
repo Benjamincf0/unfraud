@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -10,7 +11,8 @@ from pydantic import BaseModel, Field
 
 app = FastAPI()
 
-# In-memory storage for uploaded files
+# In-memory storage for uploaded files. This is intentionally process-local for
+# the challenge demo; exported CSVs include review decisions for handoff.
 uploaded_files: Dict[str, pd.DataFrame] = {}
 analysis_cache: Dict[str, pd.DataFrame] = {}
 review_log: Dict[str, Dict[str, Any]] = {}
@@ -57,8 +59,14 @@ class AnalyzedTransaction(TransactionBase):
     reasons: List[str] = Field(default_factory=list)
 
 class ReviewAction(BaseModel):
-    action: str  # approve, dismiss, escalate
+    action: str  # approve, dismiss, escalate, pending
     reviewer_notes: Optional[str] = None
+
+class ReviewRecord(BaseModel):
+    transaction_id: str
+    action: str
+    reviewer_notes: Optional[str] = None
+    reviewed_at: str
 
 @app.get("/")
 def read_root():
@@ -74,6 +82,7 @@ async def upload_file(file: UploadFile = File(...)):
     
     # Check if file already uploaded
     if file_hash in uploaded_files:
+        review_log.setdefault(file_hash, {})
         return UploadResponse(
             file_hash=file_hash,
             message="File already uploaded"
@@ -500,6 +509,50 @@ def _get_or_compute_analysis(file_hash: str) -> pd.DataFrame:
     return analysis_cache[file_hash]
 
 
+def _review_records_for_export(file_hash: str) -> pd.DataFrame:
+    records = review_log.get(file_hash, {})
+    if not records:
+        return pd.DataFrame(
+            columns=[
+                "transaction_id",
+                "review_decision",
+                "reviewer_notes",
+                "reviewed_at",
+            ]
+        )
+
+    return pd.DataFrame(
+        [
+            {
+                "transaction_id": transaction_id,
+                "review_decision": record.get("action", ""),
+                "reviewer_notes": record.get("reviewer_notes", ""),
+                "reviewed_at": record.get("reviewed_at", ""),
+            }
+            for transaction_id, record in records.items()
+        ]
+    )
+
+
+def _analysis_with_review_columns(file_hash: str) -> pd.DataFrame:
+    analyzed_df = _get_or_compute_analysis(file_hash).copy()
+    review_df = _review_records_for_export(file_hash)
+
+    if review_df.empty:
+        analyzed_df["review_decision"] = ""
+        analyzed_df["reviewer_notes"] = ""
+        analyzed_df["reviewed_at"] = ""
+        return analyzed_df
+
+    return analyzed_df.merge(review_df, on="transaction_id", how="left").fillna(
+        {
+            "review_decision": "",
+            "reviewer_notes": "",
+            "reviewed_at": "",
+        }
+    )
+
+
 def _to_fraud_analysis(row: pd.Series) -> FraudAnalysis:
     parsed_breakdown = json.loads(row.get("score_breakdown", "[]") or "[]")
     parsed_baseline = json.loads(row.get("card_baseline_json", "{}") or "{}")
@@ -573,13 +626,37 @@ async def get_ip_analysis(file_hash: str, ip_address: str):
         raise HTTPException(status_code=404, detail="No transactions found for this IP")
     return [_to_fraud_analysis(row) for _, row in ip_df.iterrows()]
 
+@app.get("/review/{file_hash}/audit", response_model=List[ReviewRecord])
+async def get_review_audit(file_hash: str):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    records = review_log.get(file_hash, {})
+    return [
+        ReviewRecord(
+            transaction_id=transaction_id,
+            action=str(record["action"]),
+            reviewer_notes=record.get("reviewer_notes"),
+            reviewed_at=str(record["reviewed_at"]),
+        )
+        for transaction_id, record in sorted(
+            records.items(),
+            key=lambda item: item[1].get("reviewed_at", ""),
+            reverse=True,
+        )
+    ]
+
+
 @app.post("/review/{file_hash}/{transaction_id}/{action}")
 async def review_transaction(file_hash: str, transaction_id: str, action: str, review_action: ReviewAction):
     if file_hash not in uploaded_files:
         raise HTTPException(status_code=404, detail="File not found")
     
-    if action not in ["approve", "dismiss", "escalate"]:
+    if action not in ["approve", "dismiss", "escalate", "pending"]:
         raise HTTPException(status_code=400, detail="Invalid action")
+
+    if review_action.action != action:
+        raise HTTPException(status_code=400, detail="Action body does not match URL")
     
     df = uploaded_files[file_hash]
     transaction_mask = df['transaction_id'] == transaction_id
@@ -587,13 +664,17 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
     if not transaction_mask.any():
         raise HTTPException(status_code=404, detail="Transaction not found")
     
-    review_log[file_hash][transaction_id] = {
-        "action": action,
-        "reviewer_notes": review_action.reviewer_notes,
-    }
+    if action == "pending":
+        review_log[file_hash].pop(transaction_id, None)
+    else:
+        review_log[file_hash][transaction_id] = {
+            "action": action,
+            "reviewer_notes": review_action.reviewer_notes,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
     
     return {
-        "message": f"Transaction {transaction_id} {action}d successfully",
+        "message": f"Transaction {transaction_id} set to {action}",
         "transaction_id": transaction_id,
         "action": action,
         "reviewer_notes": review_action.reviewer_notes
@@ -601,7 +682,7 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
 
 @app.get("/export/{file_hash}")
 async def export_analysis(file_hash: str):
-    analyzed_df = _get_or_compute_analysis(file_hash)
+    analyzed_df = _analysis_with_review_columns(file_hash)
     
     # Create CSV in memory
     output = io.StringIO()

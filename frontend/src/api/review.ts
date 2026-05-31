@@ -21,6 +21,23 @@ type BackendFraudAnalysis = {
   is_fraud: boolean
   fraud_score: number
   reasons?: string[]
+  score_breakdown?: BackendRiskSignal[]
+  card_baseline?: BackendCardBaseline
+}
+
+type BackendRiskSignal = {
+  code?: string
+  label?: string
+  detail?: string
+  weight?: number
+  signal_type?: string
+}
+
+type BackendCardBaseline = {
+  history_count?: number
+  typical_amount?: number
+  usual_categories?: string[]
+  usual_countries?: string[]
 }
 
 type CsvTransaction = {
@@ -41,6 +58,10 @@ type AnalyzedCsvTransaction = CsvTransaction & {
   fraud_reasons: string[]
   fraud_score: number
   is_fraud: boolean
+  review_decision?: ReviewDecision
+  reviewed_at?: string
+  reviewer_notes?: string
+  score_breakdown?: BackendRiskSignal[]
 }
 
 type BackendAnalyzedTransaction = CsvTransaction & {
@@ -48,6 +69,7 @@ type BackendAnalyzedTransaction = CsvTransaction & {
   fraud_score: number
   is_fraud: boolean
   reasons?: string[]
+  score_breakdown?: BackendRiskSignal[]
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -116,7 +138,7 @@ export async function submitReviewDecision({
   fileHash,
   transactionId,
 }: {
-  decision: Exclude<ReviewDecision, 'pending'>
+  decision: ReviewDecision
   fileHash: string
   transactionId: string
 }) {
@@ -255,6 +277,8 @@ function parseAnalyzedTransactionsCsv(csv: string): AnalyzedCsvTransaction[] {
     .filter((row) => row.some((value) => value.trim()))
     .map((row) => {
       const get = (header: string) => row[headerIndex.get(header) ?? -1] ?? ''
+      const getOptional = (header: string) =>
+        headerIndex.has(header) ? get(header) : ''
       const amount = Number(get('amount'))
       const fraudScore = Number(get('fraud_score'))
 
@@ -281,6 +305,10 @@ function parseAnalyzedTransactionsCsv(csv: string): AnalyzedCsvTransaction[] {
         merchant_category: get('merchant_category'),
         merchant_country: get('merchant_country'),
         merchant_name: get('merchant_name'),
+        review_decision: parseReviewDecision(getOptional('review_decision')),
+        reviewed_at: emptyToUndefined(getOptional('reviewed_at')),
+        reviewer_notes: emptyToUndefined(getOptional('reviewer_notes')),
+        score_breakdown: parseScoreBreakdown(getOptional('score_breakdown')),
         timestamp: get('timestamp'),
         transaction_id: get('transaction_id'),
       }
@@ -381,10 +409,14 @@ function mapAnalyzedTransactions(
         {
           fraud_score: transaction.fraud_score,
           is_fraud: transaction.is_fraud,
+          score_breakdown: transaction.score_breakdown,
           reasons: transaction.fraud_reasons,
           transaction_id: transaction.transaction_id,
         },
         contextByCard.get(transaction.card_id),
+        transaction.review_decision,
+        transaction.reviewed_at,
+        transaction.reviewer_notes,
       ),
     )
     .filter(
@@ -451,6 +483,7 @@ function toCardAnalysis(
         fraud_score: transaction.fraud_score,
         is_fraud: transaction.is_fraud,
         reasons: getBackendReasons(transaction),
+        score_breakdown: transaction.score_breakdown,
         transaction_id: transaction.transaction_id,
       }),
       score: transaction.fraud_score,
@@ -490,6 +523,7 @@ function normalizeCardTransactionPayload(
     merchant_country: readString(item, 'merchant_country'),
     merchant_name: readString(item, 'merchant_name'),
     reasons: readStringArray(item, 'reasons'),
+    score_breakdown: readRiskSignals(item, 'score_breakdown'),
     timestamp: readString(item, 'timestamp'),
     transaction_id: transactionId,
   }
@@ -516,14 +550,34 @@ function toTransactionFlag(
     usualCategories: [] as string[],
     usualCountries: [] as string[],
   },
+  decision: ReviewDecision = 'pending',
+  reviewedAt?: string,
+  reviewerNotes?: string,
 ): TransactionFlag & { isFraudCandidate: boolean } {
+  const backendContext = analysis.card_baseline
+    ? {
+        medianAmount:
+          typeof analysis.card_baseline.typical_amount === 'number'
+            ? analysis.card_baseline.typical_amount
+            : cardContext.medianAmount,
+        previousTransactions:
+          typeof analysis.card_baseline.history_count === 'number'
+            ? analysis.card_baseline.history_count
+            : cardContext.previousTransactions,
+        usualCategories:
+          analysis.card_baseline.usual_categories ?? cardContext.usualCategories,
+        usualCountries:
+          analysis.card_baseline.usual_countries ?? cardContext.usualCountries,
+      }
+    : cardContext
+
   return {
     amount: transaction.amount,
-    cardContext,
+    cardContext: backendContext,
     cardId: transaction.card_id,
     cardholderCountry: transaction.cardholder_country,
     channel: transaction.channel,
-    decision: 'pending',
+    decision,
     deviceId: transaction.device_id,
     ipAddress: transaction.ip_address,
     isFraudCandidate: analysis.is_fraud,
@@ -532,6 +586,8 @@ function toTransactionFlag(
     merchantCountry: transaction.merchant_country,
     merchantName: transaction.merchant_name,
     reasons: buildReasons(analysis),
+    reviewedAt,
+    reviewerNotes,
     score: analysis.fraud_score,
     timestamp: transaction.timestamp,
     transactionId: transaction.transaction_id,
@@ -590,6 +646,20 @@ function getMostCommon(values: string[], limit = 4) {
 }
 
 function buildReasons(analysis: BackendFraudAnalysis): RiskReason[] {
+  const scoreBreakdown = Array.isArray(analysis.score_breakdown)
+    ? analysis.score_breakdown.filter((reason) => reason.label || reason.detail)
+    : []
+
+  if (scoreBreakdown.length > 0) {
+    return scoreBreakdown.map((reason, index) => ({
+      detail: reason.detail ?? 'Backend detector returned this signal.',
+      id: `${analysis.transaction_id}-${reason.code ?? index}`,
+      label: reason.label ?? reason.code ?? 'Detector signal',
+      signalType: reason.signal_type,
+      weight: Math.round((reason.weight ?? analysis.fraud_score) * 100),
+    }))
+  }
+
   const reasons = Array.isArray(analysis.reasons) ? analysis.reasons : []
   const reasonWeight =
     reasons.length > 0
@@ -650,8 +720,12 @@ function getRiskLabel(score: number): TransactionFlag['label'] {
 }
 
 function decisionToBackendAction(
-  decision: Exclude<ReviewDecision, 'pending'>,
+  decision: ReviewDecision,
 ) {
+  if (decision === 'pending') {
+    return 'pending'
+  }
+
   if (decision === 'approved') {
     return 'approve'
   }
@@ -700,6 +774,41 @@ function parseFraudReasons(value: string) {
     .filter(Boolean)
 }
 
+function parseReviewDecision(value: string): ReviewDecision {
+  if (value === 'approve' || value === 'approved') {
+    return 'approved'
+  }
+
+  if (value === 'dismiss' || value === 'dismissed') {
+    return 'dismissed'
+  }
+
+  if (value === 'escalate' || value === 'escalated') {
+    return 'escalated'
+  }
+
+  return 'pending'
+}
+
+function parseScoreBreakdown(value: string): BackendRiskSignal[] | undefined {
+  if (!value.trim()) {
+    return undefined
+  }
+
+  try {
+    const parsedValue = JSON.parse(value) as unknown
+    return Array.isArray(parsedValue)
+      ? parsedValue.filter(isBackendRiskSignal)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isBackendRiskSignal(value: unknown): value is BackendRiskSignal {
+  return isRecord(value)
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -736,4 +845,18 @@ function readStringArray(record: Record<string, unknown>, key: string) {
   }
 
   return []
+}
+
+function readRiskSignals(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+
+  if (Array.isArray(value)) {
+    return value.filter(isBackendRiskSignal)
+  }
+
+  if (typeof value === 'string') {
+    return parseScoreBreakdown(value)
+  }
+
+  return undefined
 }
