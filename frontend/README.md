@@ -1,6 +1,9 @@
 # Fraud Hunter Frontend
 
-React + Vite reviewer UI for the Fraud Hunter challenge. The frontend starts with CSV upload, sends the file to the backend detector, then opens a human review workflow for the returned flagged transactions.
+React + Vite reviewer UI for Fraud Hunter. The frontend uploads a transaction CSV to the backend, loads flagged transactions from paginated analysis endpoints, and runs a keyboard-driven human review workflow.
+
+**User guide:** [../docs/getting-started.md](../docs/getting-started.md)  
+**Architecture (frontend ↔ backend):** [../docs/architecture.md](../docs/architecture.md)
 
 ## Run
 
@@ -9,71 +12,94 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api` to `http://127.0.0.1:8000` by default.
+The Vite dev server proxies `/api` to `http://127.0.0.1:8000` by default.  
 Set `VITE_API_BASE_URL` when the backend runs on a different origin:
 
 ```bash
 VITE_API_BASE_URL=http://localhost:8000 npm run dev
 ```
 
+From the repo root, `make dev` starts both backend and frontend.
+
 ## Backend contract
 
-The app uploads the transaction file to:
+All HTTP calls live in `src/api/review.ts`. The base URL is `import.meta.env.VITE_API_BASE_URL ?? '/api'`.
+
+### Upload and session open
 
 ```text
-POST /upload
+POST /upload                    → { file_hash, message }
+GET  /analysis/summary/{hash}   → counts, queue stats, ml_model_available
 ```
 
-Request body is multipart form data with a `file` field containing `transactions.csv`.
-
-Expected response shape:
-
-```ts
-{ file_hash: string; message: string }
-```
-
-Then it fetches backend analysis from:
+After upload (or when restoring a saved session), the app fetches the summary, then loads the flagged queue in pages:
 
 ```text
-GET /analysis/all/{file_hash}
+GET /analysis/queue/{hash}?limit=5000&offset=0&slim=true
+GET /analysis/queue/{hash}?limit=5000&offset=5000&slim=true  …
 ```
 
-The backend returns fraud analysis keyed by `transaction_id`. The frontend parses
-the uploaded CSV locally and joins those rows with the analysis response so the
-review UI can show the original transaction fields, scores, and reasons. Review
-decisions are synced with:
+Optional query params on queue and related endpoints:
+
+- `use_model=true` — ML scorer (when `fraud_model.pkl` exists)
+- `flagged_only=false` — include non-flagged rows
+- `transaction_id=…` — single row lookup
+
+### Detail and context (on demand)
 
 ```text
-POST /review/{file_hash}/{transaction_id}/{action}
+GET /analysis/transaction/{hash}/{transaction_id}  → heuristic + optional model detail
+GET /analysis/related/{hash}/{transaction_id}    → same card / device / IP
+GET /analysis/user/{hash}/{card_id}              → full card timeline
 ```
 
-Undo sends the prior decision back to the backend. When the prior state is
-pending, the frontend calls the same endpoint with `pending`, which clears the
-review record for that transaction.
-
-Uploaded result metadata is saved in `localStorage` by `file_hash`. On reload,
-the app restores the active result by fetching:
+### Review sync
 
 ```text
-GET /export/{file_hash}
+POST /review/{hash}/{transaction_id}/{action}    → approve | dismiss | escalate | pending
+GET  /review-log/{hash}                          → audit list
 ```
 
-The export endpoint provides the original transaction fields plus analysis
-columns, which lets the frontend rebuild the review queue without requiring the
-same CSV to be uploaded again.
+Undo sends `pending`, which clears the review record on the backend.
+
+### Export
+
+```text
+GET /export/{hash}?use_model=false
+```
+
+Returns the full analyzed CSV with review columns. The live UI does not use export for session restore — it reconnects via summary + queue as long as the backend still holds the upload in memory.
+
+## Browser persistence
+
+`src/lib/reviewSessions.ts` stores session **metadata** (file hash, original filename, upload time) in `localStorage`. On reload, the app reopens the active session by hash. If the backend was restarted, re-upload the CSV.
 
 ## Reviewer controls
 
-- `j` or `ArrowDown`: next transaction
-- `k` or `ArrowUp`: previous transaction
-- `a`: approve
-- `d`: dismiss
-- `e`: escalate
-- `u`: undo
+| Key | Action |
+|-----|--------|
+| `j` or `ArrowDown` | Next transaction |
+| `k` or `ArrowUp` | Previous transaction |
+| `a` | Approve |
+| `d` | Dismiss |
+| `e` | Escalate |
+| `u` | Undo |
 
 ## Frontend scope
 
-The model, detector, and updated flagged CSV are owned by the backend. The
-frontend keeps fraud detection at the API boundary, consumes backend
-explainability payloads, and limits local state to active review workflow,
-filters, cost tuning, and session audit display.
+Fraud detection and explainability payloads are owned by the backend. The frontend:
+
+- Calls the API boundary in `api/review.ts`
+- Maps backend responses to `TransactionFlag` and related types
+- Manages queue navigation, filters, threshold/cost sliders (client-side queue tuning)
+- Syncs review decisions and displays the audit log
+- Optionally compares heuristic vs ML scores when the model artifact is available
+
+Key files:
+
+| Path | Role |
+|------|------|
+| `src/App.tsx` | Upload screen vs review queue routing |
+| `src/components/ReviewQueue.tsx` | Main review workflow |
+| `src/api/review.ts` | Backend HTTP client |
+| `src/lib/scoringViews.ts` | Threshold helpers, session types |

@@ -64,9 +64,58 @@ All analysis endpoints accept optional query parameter:
 - `use_model=false` (default) — heuristic scorer
 - `use_model=true` — ML scorer (503 error if model file missing)
 
+### `GET /analysis/summary/{file_hash}`
+
+**Purpose:** High-level counts for dashboards and the upload confirmation screen.
+
+**Returns:**
+
+- `total_transactions` — rows in the uploaded CSV
+- `flagged_count` — heuristic flags (includes rows with score > 0 even if below the hard flag threshold)
+- `model_flagged_count` — same for ML scorer when available
+- `ml_model_available` — whether `fraud_model.pkl` exists
+- `flagged_queue_stats` / `model_flagged_queue_stats` — pending, approved, dismissed, escalated counts among flagged rows
+
+This is usually the **first** call after upload.
+
+### `GET /analysis/queue/{file_hash}`
+
+**Purpose:** Paginated review queue — the primary endpoint used by the live frontend.
+
+**Query parameters:**
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `use_model` | `false` | ML vs heuristic scorer |
+| `flagged_only` | `true` | When `false`, include non-flagged rows |
+| `limit` | all remaining | Page size |
+| `offset` | `0` | Skip N rows (sorted by fraud score descending) |
+| `slim` | `false` | Omit heavy `card_baseline` JSON on list items |
+| `transaction_id` | — | Return one specific row |
+
+**Returns:** `{ items, total, offset, limit }` where each item includes transaction fields, fraud score, reasons, and review decision columns.
+
+### `GET /analysis/transaction/{file_hash}/{transaction_id}`
+
+**Purpose:** Full explainability for a single transaction when the reviewer opens the detail panel.
+
+**Returns:** Transaction fields plus:
+
+- `heuristic` — score, reasons, `score_breakdown`, `card_baseline`, `cross_card_signals`, `graph_features`
+- `model` — same shape when ML artifact is available (otherwise omitted)
+- Current `review_decision`, `reviewer_notes`, `reviewed_at`
+
+### `GET /analysis/related/{file_hash}/{transaction_id}`
+
+**Purpose:** Other transactions on the same card, or sharing the same device or IP — for cross-card investigation panels.
+
+**Query:** `use_model` as above.
+
+**Returns:** `{ items: [...] }` sorted by timestamp.
+
 ### `GET /analysis/all/{file_hash}`
 
-**Purpose:** Full scored dataset for the review queue and dashboards.
+**Purpose:** Full scored dataset in one response — useful for scripts, exports, and integrations. The live UI prefers `/analysis/queue` with pagination for large files.
 
 **Returns:** A list of rich objects per transaction, including:
 
@@ -134,12 +183,17 @@ All analysis endpoints accept optional query parameter:
 
 ```mermaid
 flowchart TD
-  A[POST /upload] --> B[GET /analysis/all]
-  B --> C[Reviewer works queue]
-  C --> D[POST /review/.../action]
-  D --> C
-  C --> E[GET /export]
+  A[POST /upload] --> B[GET /analysis/summary]
+  B --> C[GET /analysis/queue pages]
+  C --> D[Reviewer works queue]
+  D --> E[GET /analysis/transaction on open]
+  D --> F[POST /review/.../action]
+  F --> D
+  D --> G[GET /review-log]
+  D --> H[GET /export optional]
 ```
+
+Legacy integrations may still call `GET /analysis/all` instead of paginated queue endpoints.
 
 ## Error handling philosophy
 

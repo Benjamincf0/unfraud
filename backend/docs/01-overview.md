@@ -49,6 +49,10 @@ These are intentional limits for the challenge demo:
 
 ## How it fits in the full app
 
+The **React frontend** (`frontend/`) is a review workstation. It uploads CSVs, loads flagged transactions from this backend in pages, shows explainability detail on demand, and syncs approve/dismiss/escalate decisions back here. It does not run fraud logic locally.
+
+Full frontend ↔ backend flow: [../../docs/architecture.md](../../docs/architecture.md)
+
 ```mermaid
 flowchart LR
   subgraph user
@@ -56,6 +60,7 @@ flowchart LR
   end
   subgraph frontend
     UI[React app]
+    LS[localStorage sessions]
   end
   subgraph backend
     API[FastAPI server]
@@ -64,7 +69,8 @@ flowchart LR
   end
   CSV[(transactions.csv)]
   R --> UI
-  UI -->|upload / review / export| API
+  UI --> LS
+  UI -->|upload / queue / review| API
   CSV --> UI
   API --> H
   API --> M
@@ -72,6 +78,15 @@ flowchart LR
   M --> API
   API -->|scores + reasons| UI
 ```
+
+Typical API sequence from the UI:
+
+1. `POST /upload` — send the CSV
+2. `GET /analysis/summary/{file_hash}` — counts and queue stats
+3. `GET /analysis/queue/{file_hash}` — paginated flagged rows
+4. `GET /analysis/transaction/{file_hash}/{id}` — full explainability when the reviewer opens a row
+5. `POST /review/...` — record decisions
+6. `GET /export/{file_hash}` — download enriched CSV (optional)
 
 ## Key files (conceptual map)
 

@@ -37,6 +37,16 @@ Dependencies are managed with **uv** (`pyproject.toml`, `uv.lock`). Python 3.14+
 | `export_challenge_csv.py` | Offline heuristic export for challenge |
 | `tests/` | Automated tests (API, scorers, algo) |
 
+## Project layout (frontend)
+
+See [../docs/architecture.md](../docs/architecture.md). Key paths:
+
+| Path | Role |
+|------|------|
+| `frontend/src/App.tsx` | Upload vs queue routing |
+| `frontend/src/api/review.ts` | Backend HTTP client |
+| `frontend/src/components/ReviewQueue.tsx` | Review workflow |
+
 ## Auxiliary scripts
 
 | Script | Purpose |

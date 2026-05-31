@@ -2,6 +2,12 @@
 
 This folder explains the **Fraud Hunter** backend in plain language. You do not need a programming or machine-learning background to follow it.
 
+**Project-wide docs (recommended first):**
+
+- [../../docs/README.md](../../docs/README.md) — documentation hub for all users
+- [../../docs/getting-started.md](../../docs/getting-started.md) — using the review UI without reading code
+- [../../docs/architecture.md](../../docs/architecture.md) — how the React frontend and this backend communicate
+
 Technical quick reference (endpoints, install commands) remains in [../README.md](../README.md).
 
 ## Who this is for

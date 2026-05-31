@@ -46,10 +46,18 @@ sequenceDiagram
   B->>B: Validate columns, store in memory
   B-->>U: file_hash
 
-  U->>B: GET /analysis/all/{file_hash}
+  U->>B: GET /analysis/summary/{file_hash}
   B->>S: Score all rows (cache result)
   S-->>B: Scores + explanations
-  B-->>U: List of analyzed transactions
+  B-->>U: Counts and queue stats
+
+  loop Paginated queue
+    U->>B: GET /analysis/queue/{file_hash}?offset=N
+    B-->>U: Page of flagged transactions
+  end
+
+  U->>B: GET /analysis/transaction/{file_hash}/{id}
+  B-->>U: Full explainability for one row
 
   loop Review queue
     U->>B: POST /review/.../approve|dismiss|escalate
@@ -66,7 +74,15 @@ The server parses the CSV, checks required columns, normalizes optional fields, 
 
 ### Step 2 — Analyze (on demand)
 
-Analysis runs the first time you request it (or after upload if the UI prefetches). Results are **cached** per `(file_hash, scoring mode)` so repeated requests are fast.
+Analysis runs the first time you request summary, queue, or detail endpoints. Results are **cached** per `(file_hash, scoring mode)` so repeated requests are fast.
+
+The live frontend typically calls:
+
+- **`GET /analysis/summary/{file_hash}`** — total and flagged counts, review queue stats, whether ML is available
+- **`GET /analysis/queue/{file_hash}`** — flagged rows sorted by score, with pagination (`limit`, `offset`) and optional `slim=true` for lighter list payloads
+- **`GET /analysis/transaction/{file_hash}/{transaction_id}`** — full score breakdown and cross-card JSON when a reviewer opens one transaction
+
+The bulk **`GET /analysis/all/{file_hash}`** endpoint still returns every row with explainability and is useful for scripts and integrations; the UI prefers paginated queue loading for performance.
 
 Scoring modes:
 

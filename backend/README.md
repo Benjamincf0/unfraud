@@ -4,7 +4,15 @@ FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, sup
 
 ## Documentation (start here)
 
-**Non-technical and full-system guides:** [docs/README.md](docs/README.md)
+**Non-technical and full-system guides:** [../docs/README.md](../docs/README.md)
+
+| Guide | Topic |
+|-------|--------|
+| [docs/getting-started.md](../docs/getting-started.md) | Using the review UI — no code required |
+| [docs/architecture.md](../docs/architecture.md) | Frontend ↔ backend data flow |
+| [../docs/README.md](../docs/README.md) | Documentation hub |
+
+**Backend depth:**
 
 | Guide | Topic |
 |-------|--------|
@@ -22,7 +30,11 @@ FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, sup
 - **POST /upload** — Upload CSV → `{file_hash, message}`
 
 ### Analysis (`?use_model=true` for ML)
-- **GET /analysis/all/{file_hash}** — All transactions with explainability payloads
+- **GET /analysis/summary/{file_hash}** — Counts, queue stats, ML availability
+- **GET /analysis/queue/{file_hash}** — Paginated review queue (primary UI endpoint)
+- **GET /analysis/transaction/{file_hash}/{transaction_id}** — Full explainability for one row
+- **GET /analysis/related/{file_hash}/{transaction_id}** — Same card / device / IP
+- **GET /analysis/all/{file_hash}** — All transactions with explainability (bulk)
 - **GET /analysis/user/{file_hash}/{card_id}** — Per-card history
 - **GET /analysis/ip/{file_hash}/{ip_address}** — Per-IP slice
 
