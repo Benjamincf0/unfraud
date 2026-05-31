@@ -2,16 +2,15 @@ import type { ReviewDecision, TransactionFlag } from '../types'
 
 export type RiskSortMode = 'active' | 'heuristic' | 'model'
 
-export type ScoringSnapshot = {
-  allItems: TransactionFlag[]
-  items: TransactionFlag[]
+export type ReviewSummary = {
+  totalTransactions: number
+  flaggedCount: number
+  mlModelAvailable: boolean
 }
 
-export type DualReviewDataResult = {
+export type ReviewSessionData = {
   fileHash: string
-  heuristic: ScoringSnapshot
-  mlModelAvailable: boolean
-  model: ScoringSnapshot | null
+  summary: ReviewSummary
   source: 'cache' | 'upload'
 }
 
@@ -27,6 +26,9 @@ export const defaultRiskTuning: RiskTuningByMode = {
   heuristic: { falsePositiveCost: 5, riskThreshold: 0 },
   model: { falsePositiveCost: 5, riskThreshold: 0 },
 }
+
+export const QUEUE_BOOTSTRAP_LIMIT = 300
+export const QUEUE_PAGE_SIZE = 200
 
 const neutralFalsePositiveCost = 5
 
@@ -90,15 +92,4 @@ export function resolveRiskSortMode(
   }
 
   return useModel ? 'model' : 'heuristic'
-}
-
-export function getScoreSource(
-  data: DualReviewDataResult,
-  mode: Exclude<RiskSortMode, 'active'>,
-): ScoringSnapshot | null {
-  if (mode === 'model') {
-    return data.model
-  }
-
-  return data.heuristic
 }

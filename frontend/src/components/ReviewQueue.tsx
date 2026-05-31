@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   EmptyTransactionDetail,
@@ -10,21 +10,25 @@ import { Input } from "./ui/input";
 import { Slider } from "./ui/slider";
 import { Tabs } from "./ui/tabs";
 import {
+  applyScorerDetailToTransaction,
   fetchCardAnalysis,
+  fetchRelatedTransactions,
+  fetchReviewBootstrap,
   fetchReviewLog,
+  fetchReviewQueuePage,
+  fetchTransactionDetail,
   submitReviewDecision,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
+import { applyModelScores, mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
-  collectDecisions,
   defaultRiskTuning,
   getEffectiveRiskThreshold,
-  getScoreSource,
-  mergeScoringWithDecisions,
+  QUEUE_PAGE_SIZE,
   resolveRiskSortMode,
   sortTransactionsByScore,
-  type DualReviewDataResult,
+  type ReviewSessionData,
   type RiskSortMode,
   type RiskTuningByMode,
 } from "../lib/scoringViews";
@@ -44,7 +48,7 @@ type ReviewQueueProps = {
   activeFileHash: string;
   onReset: () => void;
   onSelectSession: (fileHash: string) => void;
-  reviewData: DualReviewDataResult;
+  session: ReviewSessionData;
   sessions: ReviewSession[];
 };
 
@@ -247,21 +251,27 @@ export function ReviewQueue({
   activeFileHash,
   onReset,
   onSelectSession,
-  reviewData,
+  session,
   sessions,
 }: ReviewQueueProps) {
-  const fileHash = reviewData.fileHash;
+  const fileHash = session.fileHash;
+  const { summary } = session;
   const queryClient = useQueryClient();
   const [useModel, setUseModel] = useState(false);
   const [sortMode, setSortMode] = useState<RiskSortMode>("active");
   const [riskTuningByMode, setRiskTuningByMode] =
     useState<RiskTuningByMode>(defaultRiskTuning);
-  const [transactions, setTransactions] = useState(
-    reviewData.heuristic.items,
+  const [heuristicById, setHeuristicById] = useState(
+    () => new Map<string, TransactionFlag>(),
   );
-  const [activeId, setActiveId] = useState(
-    reviewData.heuristic.items[0]?.transactionId ?? "",
+  const [modelById, setModelById] = useState(
+    () => new Map<string, TransactionFlag>(),
   );
+  const [relatedById, setRelatedById] = useState(
+    () => new Map<string, TransactionFlag[]>(),
+  );
+  const [loadedQueueCount, setLoadedQueueCount] = useState(0);
+  const [activeId, setActiveId] = useState("");
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("all");
@@ -279,6 +289,12 @@ export function ReviewQueue({
     label: string;
     transactionIds: Set<string>;
   } | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const enrichedIdsRef = useRef(new Set<string>());
+  const bootstrapQuery = useQuery({
+    queryFn: () => fetchReviewBootstrap(fileHash, summary),
+    queryKey: ["review-bootstrap", fileHash],
+  });
   const {
     error: reviewSyncError,
     isError: reviewSyncFailed,
@@ -290,13 +306,7 @@ export function ReviewQueue({
       ...variables
     }) => submitReviewDecision(variables),
     onError: (_error, variables) => {
-      setTransactions((current) =>
-        current.map((transaction) =>
-          transaction.transactionId === variables.transactionId
-            ? { ...transaction, decision: variables.previousDecision }
-            : transaction,
-        ),
-      );
+      updateDecision(variables.transactionId, variables.previousDecision);
       setHistory(variables.rollbackHistory);
       setActiveId(variables.transactionId);
     },
@@ -309,16 +319,214 @@ export function ReviewQueue({
     queryFn: () => fetchReviewLog(fileHash),
     queryKey: ["review-log", fileHash],
   });
+
+  const updateDecision = useCallback(
+    (transactionId: string, decision: ReviewDecision) => {
+      setHeuristicById((current) => {
+        const transaction = current.get(transactionId);
+        if (!transaction) {
+          return current;
+        }
+
+        const next = new Map(current);
+        next.set(transactionId, { ...transaction, decision });
+        return next;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setHeuristicById(new Map());
+    setModelById(new Map());
+    setRelatedById(new Map());
+    setLoadedQueueCount(0);
+    enrichedIdsRef.current = new Set();
+    setUseModel(false);
+    setSortMode("active");
+    setRiskTuningByMode(defaultRiskTuning);
+    setActiveId("");
+    setFilter("pending");
+    setSearchMode("all");
+    setSingleField("transaction_id");
+    setCustomFields(["transaction_id", "card_id", "merchant_name"]);
+    setNetworkFocus(null);
+    setHistory([]);
+  }, [fileHash]);
+
+  useEffect(() => {
+    if (!bootstrapQuery.data) {
+      return;
+    }
+
+    setHeuristicById((current) =>
+      mergeTransactionMaps(current, bootstrapQuery.data.heuristic),
+    );
+    setModelById((current) =>
+      mergeTransactionMaps(current, bootstrapQuery.data.model),
+    );
+    setLoadedQueueCount(bootstrapQuery.data.heuristic.length);
+    setActiveId((current) =>
+      current || bootstrapQuery.data.heuristic[0]?.transactionId || "",
+    );
+  }, [bootstrapQuery.data]);
+
+  useEffect(() => {
+    if (!activeId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadActiveTransaction() {
+      try {
+        if (!heuristicById.has(activeId)) {
+          const heuristicPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId: activeId,
+            useModel: false,
+          });
+          if (cancelled) {
+            return;
+          }
+          setHeuristicById((current) =>
+            mergeTransactionMaps(current, heuristicPage.items),
+          );
+        }
+
+        if (summary.mlModelAvailable && !modelById.has(activeId)) {
+          const modelPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId: activeId,
+            useModel: true,
+          });
+          if (cancelled) {
+            return;
+          }
+          setModelById((current) =>
+            mergeTransactionMaps(current, modelPage.items),
+          );
+        }
+
+        const detail = await fetchTransactionDetail(fileHash, activeId);
+        if (cancelled) {
+          return;
+        }
+
+        setHeuristicById((current) => {
+          const existing = current.get(activeId);
+          if (!existing) {
+            return current;
+          }
+
+          const next = new Map(current);
+          next.set(
+            activeId,
+            applyScorerDetailToTransaction(
+              existing,
+              detail.heuristic,
+              activeId,
+            ),
+          );
+          return next;
+        });
+
+        if (detail.model) {
+          setModelById((current) => {
+            const existing =
+              current.get(activeId) ??
+              heuristicById.get(activeId) ??
+              bootstrapQuery.data?.heuristic.find(
+                (item) => item.transactionId === activeId,
+              );
+            if (!existing) {
+              return current;
+            }
+
+            const next = new Map(current);
+            next.set(
+              activeId,
+              applyScorerDetailToTransaction(existing, detail.model!, activeId),
+            );
+            return next;
+          });
+        }
+
+        const relatedHeuristic = await fetchRelatedTransactions(
+          fileHash,
+          activeId,
+          false,
+        );
+        if (cancelled) {
+          return;
+        }
+
+        setRelatedById((current) => {
+          const next = new Map(current);
+          next.set(activeId, relatedHeuristic);
+          return next;
+        });
+        setHeuristicById((current) =>
+          mergeTransactionMaps(current, relatedHeuristic),
+        );
+
+        if (summary.mlModelAvailable) {
+          const relatedModel = await fetchRelatedTransactions(
+            fileHash,
+            activeId,
+            true,
+          );
+          if (!cancelled) {
+            setModelById((current) =>
+              mergeTransactionMaps(current, relatedModel),
+            );
+          }
+        }
+      } catch {
+        // Keep the queue row visible even if detail enrichment fails.
+      }
+    }
+
+    void loadActiveTransaction();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeId,
+    bootstrapQuery.data,
+    fileHash,
+    heuristicById,
+    modelById,
+    summary.mlModelAvailable,
+  ]);
+
+  const flaggedTransactions = useMemo(
+    () =>
+      Array.from(heuristicById.values()).filter(
+        (transaction) => transaction.isFraud || transaction.score > 0,
+      ),
+    [heuristicById],
+  );
+
+  const transactions = useMemo(
+    () =>
+      flaggedTransactions.map((transaction) => {
+        const modelTransaction = modelById.get(transaction.transactionId);
+        return useModel && modelTransaction
+          ? applyModelScores(transaction, modelTransaction)
+          : transaction;
+      }),
+    [flaggedTransactions, modelById, useModel],
+  );
+
   const heuristicIndex = useMemo(
-    () => buildTransactionIndex(reviewData.heuristic.allItems),
-    [reviewData.heuristic.allItems],
+    () => buildTransactionIndex(Array.from(heuristicById.values())),
+    [heuristicById],
   );
   const modelIndex = useMemo(
-    () =>
-      reviewData.model
-        ? buildTransactionIndex(reviewData.model.allItems)
-        : new Map<string, TransactionFlag>(),
-    [reviewData.model],
+    () => buildTransactionIndex(Array.from(modelById.values())),
+    [modelById],
   );
   const resolvedSortMode = useMemo(
     () => resolveRiskSortMode(sortMode, useModel),
@@ -335,10 +543,6 @@ export function ReviewQueue({
       ]),
     );
   }, [heuristicIndex, modelIndex, resolvedSortMode]);
-  const displayIndex = useMemo(
-    () => (useModel && reviewData.model ? modelIndex : heuristicIndex),
-    [heuristicIndex, modelIndex, reviewData.model, useModel],
-  );
   const activeTuning = riskTuningByMode[sortMode];
   const effectiveRiskThreshold = useMemo(
     () =>
@@ -352,17 +556,13 @@ export function ReviewQueue({
     () => sortTransactionsByScore(transactions, scoreIndex),
     [scoreIndex, transactions],
   );
-  const allItems = useMemo(
-    () =>
-      mergeScoringWithDecisions(
-        reviewData.heuristic.allItems.map(
-          (transaction) =>
-            displayIndex.get(transaction.transactionId) ?? transaction,
-        ),
-        collectDecisions(transactions),
-      ),
-    [displayIndex, reviewData.heuristic.allItems, transactions],
-  );
+  const networkTransactions = useMemo(() => {
+    if (!activeId) {
+      return Array.from(heuristicById.values());
+    }
+
+    return relatedById.get(activeId) ?? Array.from(heuristicById.values());
+  }, [activeId, heuristicById, relatedById]);
 
   const searchScopeKeys = useMemo(() => {
     if (searchMode === "single") {
@@ -495,92 +695,106 @@ export function ReviewQueue({
     [queueStats, transactions.length],
   );
 
-  const activeScoringSnapshot =
-    useModel && reviewData.model ? reviewData.model : reviewData.heuristic
-  const totalScoredCount = activeScoringSnapshot.allItems.length
-  const queuedCount = transactions.length
-  const notQueuedCount = Math.max(0, totalScoredCount - queuedCount)
-  const reviewedCount = queuedCount - queueStats.pending
-  const scorerLabel = useModel ? 'ML model' : 'Heuristic'
+  const totalScoredCount = summary.totalTransactions;
+  const queuedCount = summary.flaggedCount;
+  const notQueuedCount = Math.max(0, totalScoredCount - queuedCount);
+  const reviewedCount = queueStats.pending;
+  const scorerLabel = useModel ? "ML model" : "Heuristic";
+  const hasMoreFlagged = loadedQueueCount < summary.flaggedCount;
 
   const statusContextLine = useMemo(() => {
     const filtersActive =
-      filter !== 'pending' ||
-      query.trim() !== '' ||
+      filter !== "pending" ||
+      query.trim() !== "" ||
       networkFocus !== null ||
-      effectiveRiskThreshold > 0
+      effectiveRiskThreshold > 0;
 
-    if (filtersActive && visibleTransactions.length !== queuedCount) {
-      return `Showing ${visibleTransactions.length.toLocaleString()} of ${queuedCount.toLocaleString()} flagged (filters active)`
+    if (loadedQueueCount < summary.flaggedCount) {
+      return `Loaded ${loadedQueueCount.toLocaleString()} of ${summary.flaggedCount.toLocaleString()} flagged`;
+    }
+
+    if (filtersActive && visibleTransactions.length !== transactions.length) {
+      return `Showing ${visibleTransactions.length.toLocaleString()} of ${transactions.length.toLocaleString()} loaded flagged (filters active)`;
     }
 
     if (reviewedCount > 0) {
-      return `${queueStats.pending.toLocaleString()} still to review · ${reviewedCount.toLocaleString()} reviewed`
+      return `${queueStats.pending.toLocaleString()} still to review · ${(transactions.length - queueStats.pending).toLocaleString()} reviewed`;
     }
 
     if (notQueuedCount > 0) {
-      return `${notQueuedCount.toLocaleString()} scored with no flag (not in this list)`
+      return `${notQueuedCount.toLocaleString()} scored with no flag (not in this list)`;
     }
 
-    return null
+    return null;
   }, [
     effectiveRiskThreshold,
     filter,
+    loadedQueueCount,
     networkFocus,
     notQueuedCount,
     queueStats.pending,
     query,
-    queuedCount,
     reviewedCount,
+    summary.flaggedCount,
+    transactions.length,
     visibleTransactions.length,
-  ])
-
-  const applyScoringView = useCallback(
-    (nextUseModel: boolean, decisions: Map<string, ReviewDecision>) => {
-      const scoringSource = getScoreSource(
-        reviewData,
-        nextUseModel ? "model" : "heuristic",
-      );
-
-      if (!scoringSource) {
-        return;
-      }
-
-      setTransactions(
-        mergeScoringWithDecisions(scoringSource.items, decisions),
-      );
-    },
-    [reviewData],
-  );
-
-  useEffect(() => {
-    setUseModel(false);
-    setSortMode("active");
-    setRiskTuningByMode(defaultRiskTuning);
-    setTransactions(reviewData.heuristic.items);
-    setActiveId(reviewData.heuristic.items[0]?.transactionId ?? "");
-    setFilter("pending");
-    setSearchMode("all");
-    setSingleField("transaction_id");
-    setCustomFields(["transaction_id", "card_id", "merchant_name"]);
-    setNetworkFocus(null);
-    setHistory([]);
-  }, [fileHash, reviewData]);
-
-  useEffect(() => {
-    if (sortMode === "model" && !reviewData.model) {
-      setSortMode("active");
-    }
-  }, [reviewData.model, sortMode]);
+  ]);
 
   const handleUseModelChange = (nextUseModel: boolean) => {
-    if (nextUseModel && !reviewData.model) {
+    if (nextUseModel && !summary.mlModelAvailable) {
       return;
     }
 
     setUseModel(nextUseModel);
-    applyScoringView(nextUseModel, collectDecisions(transactions));
   };
+
+  const loadMoreFlagged = useCallback(async () => {
+    if (isLoadingMore || loadedQueueCount >= summary.flaggedCount) {
+      return;
+    }
+
+    setIsLoadingMore(true);
+
+    try {
+      const heuristicPage = await fetchReviewQueuePage(fileHash, {
+        limit: QUEUE_PAGE_SIZE,
+        offset: loadedQueueCount,
+        useModel: false,
+      });
+      setHeuristicById((current) =>
+        mergeTransactionMaps(current, heuristicPage.items),
+      );
+
+      if (summary.mlModelAvailable) {
+        const modelPage = await fetchReviewQueuePage(fileHash, {
+          limit: QUEUE_PAGE_SIZE,
+          offset: loadedQueueCount,
+          useModel: true,
+        });
+        setModelById((current) =>
+          mergeTransactionMaps(current, modelPage.items),
+        );
+      }
+
+      setLoadedQueueCount(
+        (current) => current + heuristicPage.items.length,
+      );
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [
+    fileHash,
+    isLoadingMore,
+    loadedQueueCount,
+    summary.flaggedCount,
+    summary.mlModelAvailable,
+  ]);
+
+  useEffect(() => {
+    if (sortMode === "model" && !summary.mlModelAvailable) {
+      setSortMode("active");
+    }
+  }, [sortMode, summary.mlModelAvailable]);
 
   const updateRiskTuning = (
     mode: RiskSortMode,
