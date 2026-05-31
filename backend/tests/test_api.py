@@ -352,6 +352,10 @@ tx_tune_004,2026-04-25T00:03:00,card_tune_001,80.0,Store B,electronics,online,US
     assert response.status_code == 200
     payload = response.json()
     assert payload["feedback_reason_codes"] == ["amount_outlier"]
+    assert payload["feedback_effects"][0]["type"] == "heuristic_weight"
+    assert payload["feedback_effects"][0]["signal_code"] == "amount_outlier"
+    assert payload["feedback_effects"][0]["direction"] == "decreased"
+    assert "0.85x" in payload["feedback_effects"][0]["summary"]
 
     response = client.get(f"/analysis/transaction/{file_hash}/tx_tune_004")
     assert response.status_code == 200
@@ -363,6 +367,7 @@ tx_tune_004,2026-04-25T00:03:00,card_tune_001,80.0,Store B,electronics,online,US
     entry = response.json()[0]
     assert entry["feedback_reason_codes"] == ["amount_outlier"]
     assert entry["feedback_reasoning"] == "Amount spikes are normal for this card."
+    assert entry["feedback_effects"] == payload["feedback_effects"]
 
 
 def test_error_conditions():

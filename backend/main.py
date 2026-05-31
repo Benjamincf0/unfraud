@@ -39,6 +39,17 @@ HEURISTIC_FEEDBACK_SIGNAL_CODES = {
     "ip_reuse_cross_card",
     "merchant_burst_cross_card",
 }
+HEURISTIC_FEEDBACK_SIGNAL_LABELS = {
+    "amount_outlier": "Amount anomaly",
+    "category_amount": "Category amount anomaly",
+    "category_shift": "Atypical category",
+    "device_shift": "New device for card",
+    "ip_shift": "New IP for card",
+    "geo_shift": "Location deviation",
+    "device_reuse_cross_card": "Device shared across cards",
+    "ip_reuse_cross_card": "IP shared across cards",
+    "merchant_burst_cross_card": "Merchant burst across cards",
+}
 HEURISTIC_FEEDBACK_ACTION_FACTORS = {
     "approve": 1.08,
     "dismiss": 0.85,
@@ -82,6 +93,76 @@ def _heuristic_weight_multipliers(file_hash: str) -> Dict[str, float]:
         for code, multiplier in sorted(multipliers.items())
         if abs(multiplier - 1.0) > 0.0001
     }
+
+
+def _format_multiplier(value: float) -> str:
+    return f"{value:.2f}x"
+
+
+def _transaction_ip_address(file_hash: str, transaction_id: str) -> Optional[str]:
+    df = uploaded_files.get(file_hash)
+    if df is None or "ip_address" not in df.columns:
+        return None
+
+    matches = df[df["transaction_id"] == transaction_id]
+    if matches.empty:
+        return None
+
+    return _optional_text(matches.iloc[0].get("ip_address"))
+
+
+def _build_feedback_effects(
+    file_hash: str,
+    transaction_id: str,
+    action: str,
+    feedback_reason_codes: List[str],
+    multipliers_before: Dict[str, float],
+    multipliers_after: Dict[str, float],
+) -> List[Dict[str, Any]]:
+    effects: List[Dict[str, Any]] = []
+
+    for code in feedback_reason_codes:
+        before = float(multipliers_before.get(code, 1.0))
+        after = float(multipliers_after.get(code, 1.0))
+        if abs(before - after) <= 0.0001:
+            continue
+
+        direction = "increased" if after > before else "decreased"
+        label = HEURISTIC_FEEDBACK_SIGNAL_LABELS.get(code, code)
+        effects.append(
+            {
+                "type": "heuristic_weight",
+                "signal_code": code,
+                "signal_label": label,
+                "direction": direction,
+                "previous_multiplier": round(before, 4),
+                "next_multiplier": round(after, 4),
+                "summary": (
+                    f"{label} weight {direction} from "
+                    f"{_format_multiplier(before)} to {_format_multiplier(after)}."
+                ),
+            }
+        )
+
+    if action == "escalate":
+        ip_address = _transaction_ip_address(file_hash, transaction_id)
+        if ip_address:
+            effects.append(
+                {
+                    "type": "ip_escalation_boost",
+                    "signal_code": "review_escalated_ip",
+                    "signal_label": "Previously escalated IP",
+                    "direction": "increased",
+                    "previous_multiplier": 1.0,
+                    "next_multiplier": 1.0,
+                    "summary": (
+                        f"Transactions from IP {ip_address} get "
+                        f"+{int(REVIEW_ESCALATED_IP_RISK * 100)} risk in this session."
+                    ),
+                }
+            )
+
+    return effects
 
 # Pydantic models
 class UploadResponse(BaseModel):
@@ -130,12 +211,24 @@ class ReviewAction(BaseModel):
     feedback_reason_codes: List[str] = Field(default_factory=list)
     feedback_reasoning: Optional[str] = None
 
+
+class ReviewFeedbackEffect(BaseModel):
+    type: str
+    signal_code: str
+    signal_label: str
+    direction: str
+    previous_multiplier: float
+    next_multiplier: float
+    summary: str
+
+
 class ReviewLogEntry(BaseModel):
     transaction_id: str
     action: str
     reviewer_notes: Optional[str] = None
     feedback_reason_codes: List[str] = Field(default_factory=list)
     feedback_reasoning: Optional[str] = None
+    feedback_effects: List[ReviewFeedbackEffect] = Field(default_factory=list)
     reviewed_at: str
 
 
@@ -317,6 +410,7 @@ def _review_records_for_export(file_hash: str) -> pd.DataFrame:
                 "reviewer_notes",
                 "feedback_reason_codes",
                 "feedback_reasoning",
+                "feedback_effects",
                 "reviewed_at",
             ]
         )
@@ -331,6 +425,7 @@ def _review_records_for_export(file_hash: str) -> pd.DataFrame:
                     _clean_feedback_reason_codes(record.get("feedback_reason_codes", []))
                 ),
                 "feedback_reasoning": record.get("feedback_reasoning", ""),
+                "feedback_effects": json.dumps(record.get("feedback_effects", [])),
                 "reviewed_at": record.get("reviewed_at", ""),
             }
             for transaction_id, record in records.items()
@@ -347,6 +442,7 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
         analyzed_df["reviewer_notes"] = ""
         analyzed_df["feedback_reason_codes"] = ""
         analyzed_df["feedback_reasoning"] = ""
+        analyzed_df["feedback_effects"] = ""
         analyzed_df["reviewed_at"] = ""
         return analyzed_df
 
@@ -360,6 +456,7 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
             "reviewer_notes": "",
             "feedback_reason_codes": "",
             "feedback_reasoning": "",
+            "feedback_effects": "",
             "reviewed_at": "",
         }
     )
@@ -873,6 +970,7 @@ async def get_review_audit(file_hash: str):
                 record.get("feedback_reason_codes", [])
             ),
             feedback_reasoning=record.get("feedback_reasoning"),
+            feedback_effects=record.get("feedback_effects", []),
             reviewed_at=str(record["reviewed_at"]),
         )
         for transaction_id, record in sorted(
@@ -900,10 +998,14 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
     if not transaction_mask.any():
         raise HTTPException(status_code=404, detail="Transaction not found")
     
+    multipliers_before = _heuristic_weight_multipliers(file_hash)
     if action == "pending":
         review_log[file_hash].pop(transaction_id, None)
         reviewed_at = datetime.now(timezone.utc).isoformat()
     else:
+        feedback_reason_codes = _clean_feedback_reason_codes(
+            review_action.feedback_reason_codes
+        )
         feedback_reasoning = (
             review_action.feedback_reasoning
             if review_action.feedback_reasoning is not None
@@ -912,12 +1014,20 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
         review_log[file_hash][transaction_id] = {
             "action": action,
             "reviewer_notes": review_action.reviewer_notes,
-            "feedback_reason_codes": _clean_feedback_reason_codes(
-                review_action.feedback_reason_codes
-            ),
+            "feedback_reason_codes": feedback_reason_codes,
             "feedback_reasoning": feedback_reasoning,
             "reviewed_at": datetime.now(timezone.utc).isoformat(),
         }
+        review_log[file_hash][transaction_id]["feedback_effects"] = (
+            _build_feedback_effects(
+                file_hash=file_hash,
+                transaction_id=transaction_id,
+                action=action,
+                feedback_reason_codes=feedback_reason_codes,
+                multipliers_before=multipliers_before,
+                multipliers_after=_heuristic_weight_multipliers(file_hash),
+            )
+        )
         reviewed_at = str(review_log[file_hash][transaction_id]["reviewed_at"])
     
     return {
@@ -929,6 +1039,11 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
             review_action.feedback_reason_codes
         ),
         "feedback_reasoning": review_action.feedback_reasoning,
+        "feedback_effects": (
+            []
+            if action == "pending"
+            else review_log[file_hash][transaction_id].get("feedback_effects", [])
+        ),
         "reviewed_at": reviewed_at,
     }
 
@@ -949,6 +1064,7 @@ async def get_review_log(file_hash: str):
                     payload.get("feedback_reason_codes", [])
                 ),
                 feedback_reasoning=payload.get("feedback_reasoning"),
+                feedback_effects=payload.get("feedback_effects", []),
                 reviewed_at=str(payload.get("reviewed_at", "")),
             )
         )
