@@ -18,6 +18,7 @@ import { Slider } from "./ui/slider";
 import { Tabs } from "./ui/tabs";
 import {
   applyScorerDetailToTransaction,
+  downloadAnalyzedTransactionsCsv,
   fetchCardAnalysis,
   fetchExplorerDataset,
   fetchFullReviewQueue,
@@ -448,6 +449,9 @@ export function ReviewQueue({
     enabled: Boolean(fileHash),
     queryFn: () => fetchReviewLog(fileHash),
     queryKey: ["review-log", fileHash],
+  });
+  const exportMutation = useMutation({
+    mutationFn: () => downloadAnalyzedTransactionsCsv(fileHash, { useModel }),
   });
 
   const updateDecision = useCallback(
@@ -1416,13 +1420,24 @@ export function ReviewQueue({
             {statusContextLine ? (
               <p className="review-status-context">{statusContextLine}</p>
             ) : null}
-            {networkFocus || reviewSyncFailed ? (
+            {networkFocus || reviewSyncFailed || exportMutation.isError ? (
               <p className="review-status-meta">
                 {networkFocus ? (
                   <span>Network: {networkFocus.label}</span>
                 ) : null}
                 {reviewSyncFailed ? (
                   <span title={reviewSyncError?.message}>Sync failed</span>
+                ) : null}
+                {exportMutation.isError ? (
+                  <span
+                    title={
+                      exportMutation.error instanceof Error
+                        ? exportMutation.error.message
+                        : undefined
+                    }
+                  >
+                    Export failed
+                  </span>
                 ) : null}
               </p>
             ) : null}
@@ -1532,6 +1547,16 @@ export function ReviewQueue({
               variant="outline"
             >
               Audit Log
+            </Button>
+            <Button
+              aria-label="Download analyzed transactions CSV"
+              disabled={exportMutation.isPending}
+              onClick={() => exportMutation.mutate()}
+              size="sm"
+              title="Download analyzed transactions CSV"
+              variant="outline"
+            >
+              {exportMutation.isPending ? "Exporting" : "Export CSV"}
             </Button>
             {networkFocus ? (
               <Button

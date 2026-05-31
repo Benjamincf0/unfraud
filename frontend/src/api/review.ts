@@ -178,6 +178,20 @@ function withUseModel(url: string, useModel: boolean) {
   return `${url}${separator}use_model=true`
 }
 
+function filenameFromContentDisposition(header: string | null) {
+  if (!header) {
+    return null
+  }
+
+  const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utfMatch?.[1]) {
+    return decodeURIComponent(utfMatch[1].replace(/^"|"$/g, ''))
+  }
+
+  const match = header.match(/filename="?([^";]+)"?/i)
+  return match?.[1] ?? null
+}
+
 function buildQueueUrl(
   fileHash: string,
   {
@@ -224,6 +238,31 @@ function buildQueueUrl(
 
   const query = params.toString()
   return `${apiBaseUrl}/analysis/queue/${fileHash}${query ? `?${query}` : ''}`
+}
+
+export async function downloadAnalyzedTransactionsCsv(
+  fileHash: string,
+  { useModel = false }: { useModel?: boolean } = {},
+) {
+  const response = await fetch(
+    withUseModel(`${apiBaseUrl}/export/${fileHash}`, useModel),
+  )
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'CSV export failed'))
+  }
+
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download =
+    filenameFromContentDisposition(response.headers.get('content-disposition')) ??
+    `analyzed_transactions_${fileHash.slice(0, 8)}.csv`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummary> {
