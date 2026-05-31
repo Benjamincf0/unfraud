@@ -293,6 +293,12 @@ def train_model(X_tr, y_tr):
 # ---------------------------------------------------------------------------
 # 6. Evaluate  (the metrics that actually matter for imbalanced fraud)
 # ---------------------------------------------------------------------------
+# Tune to real economics: if false alarms are costly (analyst time, friction),
+# raise cost_fp and/or lower cost_fn — then pick threshold from the curve below.
+DEFAULT_COST_FN = 50.0   # cost of missing a fraud
+DEFAULT_COST_FP = 10.0   # cost of a false alarm
+
+
 def precision_at_k(y_true, scores, k):
     """Precision among the top-k highest-scored transactions —
     mirrors an analyst reviewing the k riskiest alerts per day."""
@@ -300,24 +306,146 @@ def precision_at_k(y_true, scores, k):
     return y_true.iloc[order].mean()
 
 
-def pick_threshold_by_cost(y_true, scores, cost_fn=100.0, cost_fp=2.0):
-    """Choose the probability cutoff that minimizes expected cost.
-    cost_fn = cost of MISSING a fraud; cost_fp = cost of a false alarm."""
-    _, _, thr = precision_recall_curve(y_true, scores)
-    n_pos = y_true.sum()
-    best_t, best_cost = 0.5, np.inf
+def build_threshold_curve(
+    y_true,
+    scores,
+    *,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_fp: float = DEFAULT_COST_FP,
+) -> pd.DataFrame:
+    """Precision / recall / FP at every cutoff on the PR curve, plus expected cost."""
+    y = np.asarray(y_true, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    n_pos = int(y.sum())
+    n_neg = len(y) - n_pos
+
+    _, _, thr = precision_recall_curve(y, scores)
+    rows: List[Dict[str, Any]] = []
     for t in thr:
         pred = scores >= t
-        tp = ((pred == 1) & (y_true == 1)).sum()
-        fp = ((pred == 1) & (y_true == 0)).sum()
+        tp = int((pred & (y == 1)).sum())
+        fp = int((pred & (y == 0)).sum())
         fn = n_pos - tp
-        cost = fn * cost_fn + fp * cost_fp
-        if cost < best_cost:
-            best_cost, best_t = cost, t
-    return best_t, best_cost
+        flagged = tp + fp
+        precision = tp / flagged if flagged else 0.0
+        recall = tp / n_pos if n_pos else 0.0
+        rows.append(
+            {
+                "threshold": float(t),
+                "precision": precision,
+                "recall": recall,
+                "tp": tp,
+                "fp": fp,
+                "fn": fn,
+                "flagged": flagged,
+                "cost": fn * cost_fn + fp * cost_fp,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("threshold", ascending=False).reset_index(drop=True)
 
 
-def evaluate(model, X_te, y_te):
+def print_threshold_curve_table(
+    curve: pd.DataFrame,
+    *,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_fp: float = DEFAULT_COST_FP,
+    selected_threshold: Optional[float] = None,
+) -> None:
+    """Print the full precision/recall/FP table so ops can pick from the curve."""
+    if curve.empty:
+        print("\nThreshold curve: no scored rows.")
+        return
+
+    best_idx = int(curve["cost"].idxmin())
+    display = curve.copy()
+    display["threshold"] = display["threshold"].map(lambda t: f"{t:.4f}")
+    display["precision"] = display["precision"].map(lambda v: f"{v:.4f}")
+    display["recall"] = display["recall"].map(lambda v: f"{v:.4f}")
+    display["cost"] = display["cost"].map(lambda v: f"{v:,.0f}")
+    if selected_threshold is not None:
+        marker_idx = int((curve["threshold"] - selected_threshold).abs().idxmin())
+    else:
+        marker_idx = best_idx
+
+    print(
+        f"\nThreshold curve (cost_fn={cost_fn:g}, cost_fp={cost_fp:g}) — "
+        "read the tradeoffs, then pick a cutoff:"
+    )
+    print(
+        display[
+            ["threshold", "precision", "recall", "tp", "fp", "fn", "flagged", "cost"]
+        ].to_string(index=False)
+    )
+    best = curve.loc[best_idx]
+    print(
+        f"\n  * lowest expected cost at threshold={best['threshold']:.4f} "
+        f"(precision={best['precision']:.4f}, recall={best['recall']:.4f}, "
+        f"FP={int(best['fp'])}, cost={best['cost']:,.0f})"
+    )
+    if selected_threshold is not None and marker_idx != best_idx:
+        row = curve.loc[marker_idx]
+        print(
+            f"  → using threshold={selected_threshold:.4f} "
+            f"(precision={row['precision']:.4f}, recall={row['recall']:.4f}, "
+            f"FP={int(row['fp'])}, cost={row['cost']:,.0f})"
+        )
+
+
+def pick_threshold_by_cost(
+    y_true,
+    scores,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_fp: float = DEFAULT_COST_FP,
+) -> Tuple[float, float, pd.DataFrame]:
+    """Return the cutoff on the curve that minimizes expected cost."""
+    curve = build_threshold_curve(y_true, scores, cost_fn=cost_fn, cost_fp=cost_fp)
+    if curve.empty:
+        return 0.5, np.inf, curve
+    best = curve.loc[curve["cost"].idxmin()]
+    return float(best["threshold"]), float(best["cost"]), curve
+
+
+def tune_threshold(
+    y_true,
+    scores,
+    *,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_fp: float = DEFAULT_COST_FP,
+    threshold: Optional[float] = None,
+    print_table: bool = True,
+) -> Tuple[float, pd.DataFrame]:
+    """Print the full curve and pick a threshold from it (not a blind cost guess)."""
+    curve = build_threshold_curve(y_true, scores, cost_fn=cost_fn, cost_fp=cost_fp)
+    if threshold is None:
+        threshold, cost, _ = pick_threshold_by_cost(y_true, scores, cost_fn, cost_fp)
+        if print_table:
+            print_threshold_curve_table(
+                curve, cost_fn=cost_fn, cost_fp=cost_fp, selected_threshold=threshold
+            )
+        print(
+            f"\nCost-optimal threshold: {threshold:.4f} (expected cost={cost:,.0f})"
+        )
+        print(
+            "  Override pipeline.threshold after reading the table if ops "
+            "needs a different precision/recall point."
+        )
+    else:
+        if print_table:
+            print_threshold_curve_table(
+                curve, cost_fn=cost_fn, cost_fp=cost_fp, selected_threshold=threshold
+            )
+    return threshold, curve
+
+
+def evaluate(
+    model,
+    X_te,
+    y_te,
+    *,
+    cost_fn: float = DEFAULT_COST_FN,
+    cost_fp: float = DEFAULT_COST_FP,
+    threshold: Optional[float] = None,
+):
     scores = model.predict_proba(X_te)[:, 1]
     print(f"\nPR-AUC : {average_precision_score(y_te, scores):.4f}")
     print(f"ROC-AUC: {roc_auc_score(y_te, scores):.4f}")
@@ -325,8 +453,9 @@ def evaluate(model, X_te, y_te):
         k = min(k, len(y_te))
         print(f"Precision@{k:<5}: {precision_at_k(y_te, scores, k):.4f}")
 
-    t, cost = pick_threshold_by_cost(y_te, scores)
-    print(f"\nCost-optimal threshold: {t:.4f} (expected cost={cost:,.0f})")
+    t, _ = tune_threshold(
+        y_te, scores, cost_fn=cost_fn, cost_fp=cost_fp, threshold=threshold
+    )
     pred = (scores >= t).astype(int)
     print("\nConfusion matrix:")
     print(confusion_matrix(y_te, pred))
@@ -720,12 +849,18 @@ class FraudDetectionPipeline:
 
     def __init__(
         self,
-        model_threshold: float = 0.5,
+        model_threshold: Optional[float] = None,
+        *,
+        cost_fn: float = DEFAULT_COST_FN,
+        cost_fp: float = DEFAULT_COST_FP,
         metrics_path: Path | str = DEFAULT_METRICS_PATH,
     ):
         self.model: Optional[LGBMClassifier] = None
         self.explainer = None
-        self.threshold = model_threshold
+        self.threshold = 0.5 if model_threshold is None else model_threshold
+        self._threshold_from_curve = model_threshold is None
+        self.cost_fn = cost_fn
+        self.cost_fp = cost_fp
         self.monitor = DriftMonitor(metrics_path)
 
     def fit(self, path: str, train_frac: float = 0.8) -> "FraudDetectionPipeline":
@@ -782,12 +917,24 @@ class FraudDetectionPipeline:
             ]
         return out
 
-    def evaluate(self, model=None, X_te=None, y_te=None) -> float:
+    def evaluate(
+        self,
+        model=None,
+        X_te=None,
+        y_te=None,
+        *,
+        cost_fn: Optional[float] = None,
+        cost_fp: Optional[float] = None,
+        threshold: Optional[float] = None,
+    ) -> float:
         model = model or self.model
         X_te = X_te if X_te is not None else getattr(self, "_last_X_te", None)
         y_te = y_te if y_te is not None else getattr(self, "_last_y_te", None)
         if model is None or X_te is None or y_te is None:
             raise RuntimeError("Nothing to evaluate — fit the pipeline or pass model/X/y")
+        cost_fn = self.cost_fn if cost_fn is None else cost_fn
+        cost_fp = self.cost_fp if cost_fp is None else cost_fp
+        use_curve_threshold = threshold is None and self._threshold_from_curve
         scores = model.predict_proba(X_te)[:, 1]
         pr_auc = float(average_precision_score(y_te, scores))
         print(f"\nPR-AUC : {pr_auc:.4f}")
@@ -795,8 +942,16 @@ class FraudDetectionPipeline:
         for k in (100, 500, 1000):
             k = min(k, len(y_te))
             print(f"Precision@{k:<5}: {precision_at_k(y_te, scores, k):.4f}")
-        t, cost = pick_threshold_by_cost(y_te, scores)
-        print(f"\nCost-optimal threshold: {t:.4f} (expected cost={cost:,.0f})")
+        pick = None if use_curve_threshold else (threshold if threshold is not None else self.threshold)
+        t, _ = tune_threshold(
+            y_te,
+            scores,
+            cost_fn=cost_fn,
+            cost_fp=cost_fp,
+            threshold=pick,
+        )
+        if use_curve_threshold:
+            self.threshold = t
         pred = (scores >= t).astype(int)
         print("\nConfusion matrix:")
         print(confusion_matrix(y_te, pred))
