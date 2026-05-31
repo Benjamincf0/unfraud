@@ -75,6 +75,13 @@ All analysis endpoints accept optional query parameter:
 - `model_flagged_count` — same for ML scorer when available
 - `ml_model_available` — whether `fraud_model.pkl` exists
 - `flagged_queue_stats` / `model_flagged_queue_stats` — pending, approved, dismissed, escalated counts among flagged rows
+- `model_threshold` — ML probability cutoff from the saved model (when ML is available)
+- `model_only_count` — queued because model probability ≥ threshold, with no alert rule
+- `alert_only_count` — queued because an alert rule fired, with model below threshold
+- `model_alert_both_count` — queued because both model and an alert rule fired
+- `soft_rule_only_count` — soft guardrail bumped `fraud_score` but row is **not** in the queue
+
+The ML breakdown counts apply to hybrid scoring (`use_model=true`). The frontend uses them for the queue header and **Model only / Alert rule only / Model + alert** filter tabs.
 
 This is usually the **first** call after upload.
 
@@ -94,6 +101,17 @@ This is usually the **first** call after upload.
 | `transaction_id` | — | Return one specific row |
 
 **Returns:** `{ items, total, offset, limit }` where each item includes transaction fields, fraud score, reasons, and review decision columns.
+
+When `use_model=true`, each item also includes ML hybrid fields (omitted for heuristic mode):
+
+| Field | Meaning |
+|-------|---------|
+| `model_score` | LightGBM fraud probability (0–1) |
+| `flagged_by_model` | Model probability ≥ saved threshold |
+| `flagged_by_alert` | A strict alert guardrail fired (`rule_alert` in training code) |
+| `rule_guardrail` | A soft guardrail fired (score boost only; does not queue by itself) |
+
+The frontend maps these to queue-cause filters: model-only, alert-only, or both.
 
 ### `GET /analysis/transaction/{file_hash}/{transaction_id}`
 

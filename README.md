@@ -87,7 +87,7 @@ On the provided dataset the heuristic detector processes all 1,000 rows and flag
 
 ## Reviewer workflow
 
-The React UI opens into a working review queue after upload. Reviewers can search, filter by decision, inspect card history and cross-card links, tune the queue with threshold and cost sliders, and use keyboard shortcuts:
+The React UI opens into a working review queue after upload. Reviewers can search, filter by decision, slice the ML queue by cause (model-only, alert-rule-only, or both), inspect card history and cross-card links, tune the queue with threshold and cost sliders, and use keyboard shortcuts:
 
 | Key | Action |
 |-----|--------|

@@ -86,6 +86,17 @@ Soft rules **do not** auto-queue by themselves. They increase `fraud_score` so t
 
 That mirrors the heuristic scorer: a **weighted score** built from many weak signals, plus a small set of **high-confidence overrides** (`high_confidence_rule` in `fraud_scorer.py`).
 
+### API and UI field names
+
+| Internal / training column | API / UI field | Role |
+|----------------------------|----------------|------|
+| `model_score` | `model_score` | LightGBM probability |
+| `flagged_by_model` | `flagged_by_model` | Model ≥ threshold |
+| `flagged_by_rules` (serving DataFrame) | `flagged_by_alert` | Alert guardrail queued the row |
+| `rule_guardrail` | `rule_guardrail` | Soft rule fired (score boost; may not queue) |
+
+`GET /analysis/summary/{file_hash}` exposes aggregate counts (`model_only_count`, `alert_only_count`, `model_alert_both_count`, `soft_rule_only_count`). Queue list items include the per-row booleans above when `use_model=true`. The frontend uses them for the header breakdown and **Model only / Alert rule only / Model + alert** tabs (`src/lib/mlScoring.ts`).
+
 ### Why two tiers exist
 
 An earlier hybrid rule was `is_fraud = (model ≥ threshold) OR (any soft rule)`. On the challenge CSV (~1,000 rows, no labels) that queued **~31%** of rows. Most were not “model thinks fraud”; they were **routine anomalies** (especially cross-border spend plus a merchant-country change vs the card’s previous transaction).

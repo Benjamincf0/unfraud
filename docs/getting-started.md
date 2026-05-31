@@ -70,10 +70,16 @@ These make review fast once you learn them:
 
 ### Filter and search
 
-Use the queue sidebar to:
+Use the tabs above the queue to switch views:
 
-- Show only **pending**, **approved**, **dismissed**, or **escalated** items
-- **Search** by transaction ID, card, merchant, or other fields
+- **Review queue** — only flagged transactions (`is_fraud`), sorted by risk score
+- **All transactions** — every scored row (useful for exploring borderline cases)
+
+Within the review queue, filter by decision:
+
+- **Pending**, **approved**, **dismissed**, or **escalated**
+
+Use the sidebar to **search** by transaction ID, card, merchant, or other fields.
 
 ### Tune what you see (threshold sliders)
 
@@ -86,7 +92,15 @@ These adjust **which flagged items appear in your working queue** in the UI. The
 
 ### Heuristic vs model scoring
 
-By default the app uses the **heuristic** scorer (hand-crafted rules). If a trained ML model is installed on the backend, you can switch to **model** scoring in the UI to compare both views side by side on transaction detail.
+By default the app uses the **heuristic** scorer (hand-crafted rules). If a trained ML model is installed on the backend, switch to **Model** scoring with the toggle in the queue toolbar.
+
+In model mode you get:
+
+- A **status breakdown** in the header: how many queued rows came from the model threshold alone, from a strict **alert rule** alone, from both, or were only **elevated** by a soft rule (higher score but not auto-queued)
+- **Queue cause tabs** (when the review queue is active): **All queued**, **Model only**, **Alert rule only**, and **Model + alert** — slice the queue by what triggered each flag
+- Side-by-side **heuristic vs model** detail when you open a transaction
+
+Alert rules are high-confidence guardrails (extreme amount, IP fanout, merchant burst, etc.) that can queue a row even when the model probability is below threshold. See [ML model docs](../backend/docs/05-machine-learning-model.md) for the full hybrid logic.
 
 ## Step 3 — Audit trail
 

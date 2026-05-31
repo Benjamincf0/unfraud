@@ -29,7 +29,7 @@ All HTTP calls live in `src/api/review.ts`. The base URL is `import.meta.env.VIT
 
 ```text
 POST /upload                    → { file_hash, message }
-GET  /analysis/summary/{hash}   → counts, queue stats, ml_model_available
+GET  /analysis/summary/{hash}   → counts, queue stats, ML breakdown, ml_model_available
 ```
 
 After upload (or when restoring a saved session), the app fetches the summary, then loads the flagged queue in pages:
@@ -91,7 +91,7 @@ Fraud detection and explainability payloads are owned by the backend. The fronte
 
 - Calls the API boundary in `api/review.ts`
 - Maps backend responses to `TransactionFlag` and related types
-- Manages queue navigation, filters, threshold/cost sliders (client-side queue tuning)
+- Manages queue navigation, decision filters, ML queue-cause tabs (model-only / alert-only / both), threshold/cost sliders (client-side queue tuning)
 - Syncs review decisions and displays the audit log
 - Optionally compares heuristic vs ML scores when the model artifact is available
 
@@ -103,3 +103,4 @@ Key files:
 | `src/components/ReviewQueue.tsx` | Main review workflow |
 | `src/api/review.ts` | Backend HTTP client |
 | `src/lib/scoringViews.ts` | Threshold helpers, session types |
+| `src/lib/mlScoring.ts` | ML queue-cause mapping and filter helpers |

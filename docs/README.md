@@ -45,7 +45,7 @@ See [Getting started](getting-started.md) for a full walkthrough.
 
 | Document | Contents |
 |----------|----------|
-| [getting-started.md](getting-started.md) | Upload, review queue, keyboard shortcuts, sliders, sessions |
+| [getting-started.md](getting-started.md) | Upload, review queue, filters, ML queue-cause tabs, keyboard shortcuts, sliders, sessions |
 | [architecture.md](architecture.md) | Frontend ↔ backend communication, data flow, scoring modes |
 
 ### Backend (technical depth)

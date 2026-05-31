@@ -70,7 +70,7 @@ sequenceDiagram
     API-->>UI: page of flagged transactions
   end
 
-  UI->>UI: Merge pages, apply local filters & threshold sliders
+  UI->>UI: Merge pages, apply local filters, ML queue-cause tabs, threshold sliders
 
   loop Review
     UI->>API: GET /analysis/transaction/{file_hash}/{id} (on demand)
@@ -93,7 +93,7 @@ sequenceDiagram
 ### 2. Summary
 
 - **Endpoint:** `GET /analysis/summary/{file_hash}`
-- Returns total row count, flagged counts for heuristic and (if available) ML scorers, and review queue stats (pending / approved / dismissed / escalated)
+- Returns total row count, flagged counts for heuristic and (if available) ML scorers, review queue stats (pending / approved / dismissed / escalated), and ML queue-cause breakdown (`model_only_count`, `alert_only_count`, `model_alert_both_count`, `soft_rule_only_count`, `model_threshold`)
 - Triggers scoring on first access; results are cached per `(file_hash, scoring_mode)`
 
 ### 3. Queue (paginated)
@@ -161,6 +161,7 @@ See [Heuristic scoring](../backend/docs/04-heuristic-scoring.md) and [ML model](
 | `src/components/review/CardAnalysisPanel.tsx` | Per-card history |
 | `src/components/review/CrossCardNetworkPanel.tsx` | Shared device/IP context |
 | `src/lib/scoringViews.ts` | Threshold math, queue sorting helpers |
+| `src/lib/mlScoring.ts` | ML queue-cause labels and client-side cause filters |
 | `src/lib/reviewSessions.ts` | Browser localStorage for session metadata |
 
 ### Local vs server state
@@ -171,7 +172,7 @@ See [Heuristic scoring](../backend/docs/04-heuristic-scoring.md) and [ML model](
 | Fraud scores & explanations | Backend memory (cached after first score) |
 | Review decisions | Backend `review_log` |
 | Session labels (file name, upload time) | Browser `localStorage` |
-| Queue filters, threshold sliders, selected row | React component state |
+| Queue filters, ML queue-cause tabs, view mode (queue vs explorer), threshold sliders, selected row | React component state |
 | Optimistic UI updates on approve/dismiss | React, rolled back on API error |
 
 ### Threshold sliders (client-side)

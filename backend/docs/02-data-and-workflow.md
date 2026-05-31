@@ -127,6 +127,8 @@ Filename includes the first 8 characters of the hash for traceability.
 | `graph_features_json` | Numeric inputs for charts in the UI |
 | `card_amount_series_json` | Recent amounts and scores on this card for sparklines |
 
+When `use_model=true`, queue and export rows also include ML hybrid fields: `model_score`, `flagged_by_model`, `flagged_by_alert` (strict alert rule), and `rule_guardrail` (soft rule score boost). See [05-machine-learning-model.md](05-machine-learning-model.md).
+
 ## Memory and persistence
 
 | Stored in memory | Lost when server restarts? |

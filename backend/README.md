@@ -30,7 +30,7 @@ FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, sup
 - **POST /upload** — Upload CSV → `{file_hash, message}`
 
 ### Analysis (`?use_model=true` for ML)
-- **GET /analysis/summary/{file_hash}** — Counts, queue stats, ML availability
+- **GET /analysis/summary/{file_hash}** — Counts, queue stats, ML queue-cause breakdown, ML availability
 - **GET /analysis/queue/{file_hash}** — Paginated review queue (primary UI endpoint)
 - **GET /analysis/transaction/{file_hash}/{transaction_id}** — Full explainability for one row
 - **GET /analysis/related/{file_hash}/{transaction_id}** — Same card / device / IP
