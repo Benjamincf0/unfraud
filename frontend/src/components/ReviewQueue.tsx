@@ -47,6 +47,14 @@ type ReviewQueueProps = {
   useModel: boolean
 }
 
+type ReviewSyncVariables = {
+  decision: ReviewDecision
+  fileHash: string
+  previousDecision: ReviewDecision
+  rollbackHistory: (history: DecisionAction[]) => DecisionAction[]
+  transactionId: string
+}
+
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'pending', label: 'Pending' },
   { value: 'all', label: 'All' },
@@ -260,10 +268,27 @@ export function ReviewQueue({
     transactionIds: Set<string>
   } | null>(null)
   const {
+    error: reviewSyncError,
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
-  } = useMutation({
-    mutationFn: submitReviewDecision,
+  } = useMutation<unknown, Error, ReviewSyncVariables>({
+    mutationFn: ({
+      previousDecision: _previousDecision,
+      rollbackHistory: _rollbackHistory,
+      ...variables
+    }) =>
+      submitReviewDecision(variables),
+    onError: (_error, variables) => {
+      setTransactions((current) =>
+        current.map((transaction) =>
+          transaction.transactionId === variables.transactionId
+            ? { ...transaction, decision: variables.previousDecision }
+            : transaction,
+        ),
+      )
+      setHistory(variables.rollbackHistory)
+      setActiveId(variables.transactionId)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['review-log', fileHash] })
     },
@@ -477,6 +502,9 @@ export function ReviewQueue({
       syncReviewDecision({
         decision: nextDecision,
         fileHash,
+        previousDecision: transaction.decision,
+        rollbackHistory: (current) =>
+          current.filter((historyAction) => historyAction.actedAt !== action.actedAt),
         transactionId,
       })
     },
@@ -502,6 +530,8 @@ export function ReviewQueue({
     syncReviewDecision({
       decision: lastAction.previousDecision,
       fileHash,
+      previousDecision: lastAction.nextDecision,
+      rollbackHistory: (current) => [lastAction, ...current],
       transactionId: lastAction.transactionId,
     })
   }, [fileHash, history, syncReviewDecision])
@@ -585,7 +615,9 @@ export function ReviewQueue({
             <span>{tunedQueueCount} tuned</span>
             <span>{transactions.length} in queue</span>
             {networkFocus ? <span>network: {networkFocus.label}</span> : null}
-            {reviewSyncFailed ? <span>Sync failed</span> : null}
+            {reviewSyncFailed ? (
+              <span title={reviewSyncError?.message}>Sync failed</span>
+            ) : null}
             <span>{useModel ? 'ML model' : 'Rules model'}</span>
           </div>
           <div className="topbar-actions">
