@@ -5,11 +5,20 @@ import App from './App.tsx'
 import './index.css'
 
 const queryClient = new QueryClient()
+const rootElement = document.getElementById('root')
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+if (!rootElement) {
+  throw new Error('Root element not found')
+}
+
+ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>
   </React.StrictMode>,
 )
+
+requestAnimationFrame(() => {
+  document.body.classList.add('app-ready')
+})

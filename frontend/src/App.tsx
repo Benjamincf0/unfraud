@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
@@ -9,6 +9,7 @@ import {
 } from './api/review'
 import {
   clearActiveReviewSession,
+  loadActiveReviewSession,
   loadReviewSessions,
   saveActiveReviewSession,
   saveReviewSession,
@@ -17,8 +18,10 @@ import {
 function App() {
   const [session, setSession] = useState<ReviewSessionData | null>(null)
   const [sessions, setSessions] = useState(loadReviewSessions)
-  const [activeFileHash, setActiveFileHash] = useState<string | null>(null)
-  const [isUploadMode, setIsUploadMode] = useState(true)
+  const [activeFileHash, setActiveFileHash] = useState<string | null>(
+    loadActiveReviewSession,
+  )
+  const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
   const sessionQuery = useQuery({
     enabled:
       !isUploadMode &&
@@ -64,6 +67,18 @@ function App() {
     setActiveFileHash(null)
     setIsUploadMode(true)
   }, [])
+
+  useEffect(() => {
+    const errorMessage =
+      sessionQuery.error instanceof Error ? sessionQuery.error.message : ''
+    const missingSession =
+      activeFileHash &&
+      errorMessage.toLowerCase().includes('file not found')
+
+    if (missingSession) {
+      showUploadScreen()
+    }
+  }, [activeFileHash, sessionQuery.error, showUploadScreen])
 
   if (!activeSession) {
     return (

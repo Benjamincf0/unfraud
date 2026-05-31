@@ -5,8 +5,36 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vite + React + TS</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #000;
+      }
+
+      #root {
+        min-height: 100vh;
+        background: #000;
+      }
+
+      body.app-preload::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: #000;
+        opacity: 1;
+        transition: opacity 260ms ease;
+        pointer-events: none;
+        z-index: 9999;
+      }
+
+      body.app-ready::before {
+        opacity: 0;
+      }
+    </style>
   </head>
-  <body>
+  <body class="app-preload">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

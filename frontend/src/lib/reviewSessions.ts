@@ -33,10 +33,22 @@ export function saveReviewSession(session: ReviewSession) {
 }
 
 export function loadActiveReviewSession() {
-  return window.localStorage.getItem(activeStorageKey)
+  const fileHash = window.localStorage.getItem(activeStorageKey)
+
+  if (!isNonEmptyString(fileHash)) {
+    clearActiveReviewSession()
+    return null
+  }
+
+  return fileHash
 }
 
 export function saveActiveReviewSession(fileHash: string) {
+  if (!isNonEmptyString(fileHash)) {
+    clearActiveReviewSession()
+    return
+  }
+
   window.localStorage.setItem(activeStorageKey, fileHash)
 }
 
@@ -52,8 +64,12 @@ function isReviewSession(value: unknown): value is ReviewSession {
   const candidate = value as Partial<ReviewSession>
 
   return (
-    typeof candidate.fileHash === 'string' &&
+    isNonEmptyString(candidate.fileHash) &&
     typeof candidate.label === 'string' &&
     typeof candidate.uploadedAt === 'string'
   )
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
 }
