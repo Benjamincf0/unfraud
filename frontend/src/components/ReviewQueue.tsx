@@ -151,6 +151,13 @@ export function ReviewQueue({
         return
       }
 
+      const activeIndex = visibleTransactions.findIndex(
+        (item) => item.transactionId === transactionId,
+      )
+      const nextActiveTransaction =
+        visibleTransactions[activeIndex + 1] ??
+        visibleTransactions[activeIndex - 1] ??
+        null
       const action = {
         actedAt: new Date().toISOString(),
         nextDecision,
@@ -166,13 +173,14 @@ export function ReviewQueue({
         ),
       )
       setHistory((previous) => [action, ...previous])
+      setActiveId(nextActiveTransaction?.transactionId ?? '')
       syncReviewDecision({
         decision: nextDecision,
         fileHash,
         transactionId,
       })
     },
-    [fileHash, syncReviewDecision, transactions],
+    [fileHash, syncReviewDecision, transactions, visibleTransactions],
   )
 
   const undo = useCallback(() => {
@@ -291,7 +299,7 @@ export function ReviewQueue({
             <strong>{queueStats.pending}</strong>
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
-            <span>{transactions.length} flagged</span>
+            <span>{transactions.length} candidates</span>
             {reviewSyncFailed ? <span>Sync failed</span> : null}
           </div>
           <div className="topbar-actions">
