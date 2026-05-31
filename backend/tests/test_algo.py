@@ -11,6 +11,7 @@ from algo.algo import (
     DriftMonitor,
     FraudDetectionPipeline,
     _feature_reason_detail,
+    _feature_signal_type,
     apply_rule_guardrails,
     assess_feature_separation,
     build_features,
@@ -90,11 +91,70 @@ def test_high_priority_features_present_and_sane():
         "distinct_categories_24h",
         "hour_rarity_for_card",
         "hour_never_seen_for_card",
+        "merchant_tx_30m",
+        "merchant_unique_cards_2h",
     ):
         assert col in g.columns
     fraud_row = g[g["transaction_id"] == "tx_fraud"].iloc[0]
     assert fraud_row["hour_never_seen_for_card"] == 1 or fraud_row["hour_rarity_for_card"] >= 0.85
     assert fraud_row["amt_z_vs_card"] > 0
+
+
+def _merchant_burst_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "transaction_id": ["tx_m1", "tx_m2", "tx_m3", "tx_m4", "tx_late"],
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-04-25T10:00:00",
+                    "2026-04-25T10:05:00",
+                    "2026-04-25T10:10:00",
+                    "2026-04-25T10:20:00",
+                    "2026-04-25T12:30:00",
+                ]
+            ),
+            "card_id": ["card_001", "card_001", "card_002", "card_003", "card_004"],
+            "amount": [11.0, 12.0, 10.0, 13.0, 12.0],
+            "merchant_name": ["Burst Shop"] * 5,
+            "merchant_category": ["online_retail"] * 5,
+            "channel": ["online"] * 5,
+            "cardholder_country": ["US"] * 5,
+            "merchant_country": ["US"] * 5,
+            "device_id": ["dev_1", "dev_1", "dev_2", "dev_3", "dev_4"],
+            "ip_address": ["10.0.0.1", "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"],
+        }
+    )
+
+
+def test_merchant_cross_card_features_use_merchant_windows():
+    g = build_features(shrink(_merchant_burst_df()))
+    burst_row = g[g["transaction_id"] == "tx_m4"].iloc[0]
+    late_row = g[g["transaction_id"] == "tx_late"].iloc[0]
+
+    assert burst_row["merchant_tx_30m"] == 4
+    assert burst_row["merchant_unique_cards_2h"] == 3
+    assert late_row["merchant_tx_30m"] == 1
+    assert late_row["merchant_unique_cards_2h"] == 1
+
+
+def test_merchant_burst_guardrail_requires_multiple_cards():
+    g = apply_rule_guardrails(build_features(shrink(_merchant_burst_df())))
+    repeated_same_card = g[g["transaction_id"] == "tx_m2"].iloc[0]
+    burst_row = g[g["transaction_id"] == "tx_m4"].iloc[0]
+
+    assert not repeated_same_card["rule_merchant_burst"]
+    assert burst_row["rule_merchant_burst"]
+    assert "merchant burst" in " ".join(burst_row["rule_reason_codes"])
+
+
+def test_merchant_burst_reason_is_cross_card():
+    row = build_features(shrink(_merchant_burst_df()))
+    burst_row = row[row["transaction_id"] == "tx_m4"].iloc[0]
+
+    assert _feature_signal_type("merchant_unique_cards_2h") == "cross_card"
+    assert _feature_reason_detail("merchant_unique_cards_2h", burst_row) == (
+        "Merchant appears on 3 distinct cards in the last 2 hours."
+    )
 
 
 def test_amt_z_vs_category_uses_prior_category_history():

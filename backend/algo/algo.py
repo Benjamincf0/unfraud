@@ -177,6 +177,36 @@ def add_device_ip_velocity(df, window="24h"):
     return g
 
 
+def add_merchant_cross_card_features(df):
+    """Merchant-level burst features across cards, using trailing windows."""
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    tx_window_ns = pd.Timedelta("30min").value
+    card_window_ns = pd.Timedelta("2h").value
+    merchant_tx_30m = np.ones(len(g), dtype=np.float64)
+    merchant_unique_cards_2h = np.ones(len(g), dtype=np.float64)
+
+    for _, merchant_df in g.groupby("merchant_name", sort=False):
+        merchant_df = merchant_df.sort_values("timestamp")
+        idx = merchant_df.index.to_numpy()
+        times_ns = merchant_df["timestamp"].values.astype("datetime64[ns]").astype(np.int64)
+
+        # Count merchant activity in a trailing window without looking at later rows.
+        left = 0
+        for right in range(len(merchant_df)):
+            while times_ns[right] - times_ns[left] > tx_window_ns:
+                left += 1
+            merchant_tx_30m[idx[right]] = right - left + 1
+
+        card_codes = pd.Categorical(merchant_df["card_id"]).codes.astype(np.int64)
+        merchant_unique_cards_2h[idx] = _rolling_distinct_count(
+            times_ns, card_codes, card_window_ns
+        )
+
+    g["merchant_tx_30m"] = merchant_tx_30m
+    g["merchant_unique_cards_2h"] = merchant_unique_cards_2h
+    return g
+
+
 def _expanding_amount_zscore(g: pd.DataFrame, group_col: str) -> pd.Series:
     """Z-score vs expanding mean/std within group_col; current row excluded."""
     grp = g.groupby(group_col)
@@ -272,6 +302,7 @@ def build_features(df):
     g = add_card_velocity_features(g)
     g = add_change_features(g)
     g = add_device_ip_velocity(g)
+    g = add_merchant_cross_card_features(g)
     g = add_card_history_features(g)
     g = add_category_history_features(g)
     g = add_card_category_diversity(g)
@@ -304,6 +335,7 @@ NUMERIC = [
     "merchant_change", "device_change", "country_hop",
     "fast_country_hop", "cross_border",
     "device_card_fanout_24h", "ip_card_fanout_24h",
+    "merchant_tx_30m", "merchant_unique_cards_2h",
     "card_amt_mean_so_far", "card_amt_std_so_far", "amt_z_vs_card",
     "amt_z_vs_category", "distinct_categories_24h",
     "hour_rarity_for_card", "hour_never_seen_for_card",
@@ -793,7 +825,9 @@ def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
     out["rule_device_ip"] = (out["device_card_fanout_24h"] >= 3) | (
         out["ip_card_fanout_24h"] >= 3
     )
-    out["rule_merchant_burst"] = (out["merchant_change"] == 1) & (out["tx_1h"] >= 3)
+    out["rule_merchant_burst"] = (out["merchant_tx_30m"] >= 4) & (
+        out["merchant_unique_cards_2h"] >= 3
+    )
     out["rule_guardrail"] = out[RULE_COLUMNS].any(axis=1)
     out["rule_reason_codes"] = [
         _rule_reason_codes(row) for _, row in out.iterrows()
@@ -831,7 +865,8 @@ def _rule_reason_codes(row: pd.Series) -> List[str]:
             parts.append(f"{int(row['ip_card_fanout_24h'])} cards on this IP")
     if row["rule_merchant_burst"]:
         parts.append(
-            f"merchant burst ({int(row['tx_1h'])} tx/1h after merchant change)"
+            f"merchant burst ({int(row['merchant_tx_30m'])} tx/30m, "
+            f"{int(row['merchant_unique_cards_2h'])} cards/2h)"
         )
     return parts
 
@@ -924,6 +959,8 @@ def _feature_signal_type(name: str) -> str:
     if name in {
         "device_card_fanout_24h",
         "ip_card_fanout_24h",
+        "merchant_tx_30m",
+        "merchant_unique_cards_2h",
     }:
         return "cross_card"
     if name in {
@@ -951,6 +988,8 @@ def _feature_reason_label(name: str, row: pd.Series) -> Optional[str]:
         "fast_country_hop": "Location deviation",
         "ip_card_fanout_24h": "IP shared across cards",
         "device_card_fanout_24h": "Device shared across cards",
+        "merchant_tx_30m": "Merchant burst across cards",
+        "merchant_unique_cards_2h": "Merchant burst across cards",
         "tx_5min": "Velocity spike",
         "tx_1h": "Velocity spike",
         "tx_1min": "Velocity spike",
@@ -1016,6 +1055,10 @@ def _feature_reason_detail(name: str, row: pd.Series) -> str:
         return f"IP appears on {int(val)} distinct cards in the last 24 hours."
     if name == "device_card_fanout_24h" and val is not None and float(val) >= 2:
         return f"Device appears on {int(val)} distinct cards in the last 24 hours."
+    if name == "merchant_tx_30m" and val is not None and float(val) >= 4:
+        return f"Merchant has {int(val)} transactions in the last 30 minutes."
+    if name == "merchant_unique_cards_2h" and val is not None and float(val) >= 3:
+        return f"Merchant appears on {int(val)} distinct cards in the last 2 hours."
     if name == "tx_5min" and val is not None and float(val) >= 2:
         return f"{int(val)} transactions on this card in 5 minutes."
     if name == "tx_1h" and val is not None and float(val) >= 4:
@@ -1115,6 +1158,10 @@ def _feature_reason_code(name: str, shap_val: float, row: pd.Series) -> Optional
         return f"{int(val)} cards on this IP"
     if name == "device_card_fanout_24h" and val is not None and float(val) >= 2:
         return f"{int(val)} cards on this device"
+    if name == "merchant_tx_30m" and val is not None and float(val) >= 4:
+        return f"{int(val)} tx at this merchant in 30 minutes"
+    if name == "merchant_unique_cards_2h" and val is not None and float(val) >= 3:
+        return f"{int(val)} cards at this merchant in 2 hours"
     if name == "tx_5min" and val is not None and float(val) >= 2:
         return f"{int(val)} tx in 5 minutes"
     if name == "tx_1h" and val is not None and float(val) >= 4:
@@ -1225,7 +1272,17 @@ def _feature_to_breakdown_item(
         baseline = float(row.get("card_amt_mean_so_far", 0) or 0)
     elif name == "amt_z_vs_category":
         value = float(row.get("amount", 0) or 0)
-    elif name in {"ip_card_fanout_24h", "device_card_fanout_24h", "spend_24h", "tx_24h", "tx_1h", "tx_5min", "tx_1min"}:
+    elif name in {
+        "ip_card_fanout_24h",
+        "device_card_fanout_24h",
+        "merchant_tx_30m",
+        "merchant_unique_cards_2h",
+        "spend_24h",
+        "tx_24h",
+        "tx_1h",
+        "tx_5min",
+        "tx_1min",
+    }:
         raw = row.get(name)
         if raw is not None:
             value = float(raw)
@@ -1399,6 +1456,7 @@ def explain_alerts(
 OPS_DIR = Path(__file__).resolve().parent / "ops"
 DEFAULT_METRICS_PATH = OPS_DIR / "drift_metrics.json"
 DEFAULT_MODEL_PATH = OPS_DIR / "fraud_model.pkl"
+MODEL_ARTIFACT_VERSION = 2
 
 
 def _iso_week(ts: Optional[datetime] = None) -> str:
@@ -1712,7 +1770,7 @@ class FraudDetectionPipeline:
             "model": self.model,
             "threshold": float(self.threshold),
             "features": list(FEATURES),
-            "version": 1,
+            "version": MODEL_ARTIFACT_VERSION,
         }
         with target.open("wb") as handle:
             pickle.dump(artifact, handle)
@@ -1725,6 +1783,12 @@ class FraudDetectionPipeline:
             raise FileNotFoundError(f"No model artifact at {target}")
         with target.open("rb") as handle:
             artifact = pickle.load(handle)
+        artifact_features = list(artifact.get("features") or [])
+        if artifact_features != list(FEATURES):
+            raise ValueError(
+                f"Model artifact feature schema does not match current code at {target}. "
+                "Retrain with: uv run python -m scripts.train_fraud_model"
+            )
         pipeline = cls(model_threshold=float(artifact["threshold"]))
         pipeline.model = artifact["model"]
         pipeline.threshold = float(artifact["threshold"])

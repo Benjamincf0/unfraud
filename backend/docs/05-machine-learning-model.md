@@ -55,7 +55,7 @@ Alert if:
 | **Geo** | Cross-border payment **and** country changed vs previous transaction or fast hop (< 1 hour) |
 | **Off-hours** | Unusual hour for this card **and** elevated amount |
 | **Device / IP** | Same device or IP seen on ≥ 3 different cards in 24 hours |
-| **Merchant burst** | Merchant name changed **and** ≥ 3 transactions in the last hour |
+| **Merchant burst** | Same merchant has ≥ 4 transactions in 30 minutes across ≥ 3 cards in 2 hours |
 
 Guardrails catch **known attack shapes** even when the ML model is uncertain on new fraud types.
 
@@ -71,7 +71,7 @@ Categories include:
 | **Amount shape** | Log amount, round amounts, just-below-$100 patterns |
 | **Velocity** | Counts in 1 min / 5 min / 1 h / 24 h; spend in 24 h |
 | **Changes** | New merchant, device, country hop, cross-border |
-| **Cross-card** | Distinct cards per device/IP in 24 h |
+| **Cross-card** | Distinct cards per device/IP in 24 h; merchant transaction bursts and unique cards |
 | **Card history** | Running mean/std, z-score vs card |
 | **Category history** | Z-score vs merchant category |
 | **Diversity** | Distinct categories in 24 h |
