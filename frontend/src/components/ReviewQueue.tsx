@@ -29,6 +29,7 @@ import {
   type ReviewQueueLoadProgress,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
+import { defaultDecisionFeedback } from "../lib/reviewFeedback";
 import { mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
@@ -42,6 +43,7 @@ import {
 } from "../lib/scoringViews";
 import type {
   DecisionAction,
+  DecisionFeedback,
   ReviewDecision,
   SearchFieldKey,
   ReviewLogEntry,
@@ -85,6 +87,7 @@ type ReviewQueueProps = {
 
 type ReviewSyncVariables = {
   decision: ReviewDecision;
+  feedback?: DecisionFeedback;
   fileHash: string;
   previousDecision: ReviewDecision;
   rollbackHistory: (history: DecisionAction[]) => DecisionAction[];
@@ -325,6 +328,9 @@ export function ReviewQueue({
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [history, setHistory] = useState<DecisionAction[]>([]);
+  const [decisionFeedbackById, setDecisionFeedbackById] = useState(
+    () => new Map<string, DecisionFeedback>(),
+  );
   const [networkFocus, setNetworkFocus] = useState<{
     label: string;
     transactionIds: Set<string>;
@@ -352,11 +358,13 @@ export function ReviewQueue({
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
   } = useMutation<unknown, Error, ReviewSyncVariables>({
-    mutationFn: ({
-      previousDecision: _previousDecision,
-      rollbackHistory: _rollbackHistory,
-      ...variables
-    }) => submitReviewDecision(variables),
+    mutationFn: (variables) =>
+      submitReviewDecision({
+        decision: variables.decision,
+        feedback: variables.feedback,
+        fileHash: variables.fileHash,
+        transactionId: variables.transactionId,
+      }),
     onError: (_error, variables) => {
       updateDecision(variables.transactionId, variables.previousDecision);
       setHistory(variables.rollbackHistory);
@@ -432,6 +440,7 @@ export function ReviewQueue({
     setCustomFields(["transaction_id", "card_id", "merchant_name"]);
     setNetworkFocus(null);
     setHistory([]);
+    setDecisionFeedbackById(new Map());
 
     let cancelled = false;
 
@@ -837,6 +846,10 @@ export function ReviewQueue({
     visibleTransactions.find(
       (transaction) => transaction.transactionId === activeId,
     ) ?? visibleTransactions[0];
+  const activeDecisionFeedback = activeTransaction
+    ? decisionFeedbackById.get(activeTransaction.transactionId) ??
+      defaultDecisionFeedback(activeTransaction)
+    : { reasonCodes: [], reasoning: "" };
   const isReasonsLoading = Boolean(
     activeTransaction &&
       enrichingTransactionId === activeTransaction.transactionId,
@@ -1067,10 +1080,22 @@ export function ReviewQueue({
     );
   };
 
+  const updateDecisionFeedback = useCallback(
+    (transactionId: string, feedback: DecisionFeedback) => {
+      setDecisionFeedbackById((current) => {
+        const next = new Map(current);
+        next.set(transactionId, feedback);
+        return next;
+      });
+    },
+    [],
+  );
+
   const decide = useCallback(
     (
       transactionId: string,
       nextDecision: Exclude<ReviewDecision, "pending">,
+      feedback?: DecisionFeedback,
     ) => {
       const transaction = transactions.find(
         (item) => item.transactionId === transactionId,
@@ -1093,12 +1118,14 @@ export function ReviewQueue({
         previousDecision: transaction.decision,
         transactionId,
       };
+      const feedbackPayload = feedback ?? defaultDecisionFeedback(transaction);
 
       updateDecision(transactionId, nextDecision);
       setHistory((previous) => [action, ...previous]);
       setActiveId(nextActiveTransaction?.transactionId ?? "");
       syncReviewDecision({
         decision: nextDecision,
+        feedback: feedbackPayload,
         fileHash,
         previousDecision: transaction.decision,
         rollbackHistory: (current) =>
@@ -1516,9 +1543,11 @@ export function ReviewQueue({
                   ? activeCardAnalysisQuery.error.message
                   : null
               }
+              decisionFeedback={activeDecisionFeedback}
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               isReasonsLoading={isReasonsLoading}
               onDecide={decide}
+              onDecisionFeedbackChange={updateDecisionFeedback}
               onFilterCardCountry={filterByCardCountry}
               onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}

@@ -15,10 +15,16 @@ export type SearchFieldKey =
 
 export type RiskReason = {
   id: string
+  code?: string
   label: string
   detail: string
   weight: number
   signalType?: 'per_card' | 'cross_card' | 'composite' | string
+}
+
+export type DecisionFeedback = {
+  reasonCodes: string[]
+  reasoning: string
 }
 
 export type TransactionFlag = {

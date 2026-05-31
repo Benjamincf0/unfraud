@@ -2,9 +2,11 @@ import { CardAnalysisPanel } from './CardAnalysisPanel'
 import { CrossCardNetworkPanel } from './CrossCardNetworkPanel'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
+import { getFeedbackReasonCode } from '../../lib/reviewFeedback'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
 import type {
   CardAnalysis,
+  DecisionFeedback,
   ReviewDecision,
   SearchFieldKey,
   TransactionFlag,
@@ -16,9 +18,15 @@ type TransactionDetailProps = {
   isCardAnalysisLoading: boolean
   isReasonsLoading?: boolean
   reasonsLoadError?: string | null
+  decisionFeedback: DecisionFeedback
   onDecide: (
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
+    feedback: DecisionFeedback,
+  ) => void
+  onDecisionFeedbackChange: (
+    transactionId: string,
+    feedback: DecisionFeedback,
   ) => void
   onFilterCardCountry: (payload: { cardId: string; country: string }) => void
   onFilterByField: (payload: { field: SearchFieldKey; value: string }) => void
@@ -38,7 +46,9 @@ export function TransactionDetail({
   isCardAnalysisLoading,
   isReasonsLoading = false,
   reasonsLoadError = null,
+  decisionFeedback,
   onDecide,
+  onDecisionFeedbackChange,
   onFilterCardCountry,
   onFilterByField,
   onFocusRelatedTransactions,
@@ -47,6 +57,27 @@ export function TransactionDetail({
   transactions,
   transaction,
 }: TransactionDetailProps) {
+  const toggleReasonCode = (reasonCode: string) => {
+    const selected = decisionFeedback.reasonCodes.includes(reasonCode)
+    onDecisionFeedbackChange(transaction.transactionId, {
+      ...decisionFeedback,
+      reasonCodes: selected
+        ? decisionFeedback.reasonCodes.filter((code) => code !== reasonCode)
+        : [...decisionFeedback.reasonCodes, reasonCode],
+    })
+  }
+
+  const updateReasoning = (reasoning: string) => {
+    onDecisionFeedbackChange(transaction.transactionId, {
+      ...decisionFeedback,
+      reasoning,
+    })
+  }
+
+  const submitDecision = (decision: Exclude<ReviewDecision, 'pending'>) => {
+    onDecide(transaction.transactionId, decision, decisionFeedback)
+  }
+
   return (
     <Card className="transaction-detail">
       <CardHeader>
@@ -247,18 +278,58 @@ export function TransactionDetail({
           transactions={transactions}
         />
 
+        <section className="decision-feedback" aria-label="Decision reason">
+          <div className="decision-feedback-header">
+            <strong>Decision reason</strong>
+            <span>Tunes heuristic weights for matching signals</span>
+          </div>
+          <div className="decision-reason-chips">
+            {transaction.reasons.map((reason, index) => {
+              const reasonCode = getFeedbackReasonCode(reason, index)
+              const selected = decisionFeedback.reasonCodes.includes(reasonCode)
+
+              return (
+                <label
+                  className={
+                    selected
+                      ? 'decision-reason-chip decision-reason-chip-selected'
+                      : 'decision-reason-chip'
+                  }
+                  key={reasonCode}
+                >
+                  <input
+                    checked={selected}
+                    onChange={() => toggleReasonCode(reasonCode)}
+                    type="checkbox"
+                  />
+                  <span>{reason.label}</span>
+                </label>
+              )
+            })}
+          </div>
+          <label className="decision-feedback-notes">
+            <span>Reasoning</span>
+            <textarea
+              onChange={(event) => updateReasoning(event.target.value)}
+              placeholder="Why this decision should change future heuristic scoring"
+              rows={3}
+              value={decisionFeedback.reasoning}
+            />
+          </label>
+        </section>
+
         <div className="action-row">
-          <Button onClick={() => onDecide(transaction.transactionId, 'approved')}>
+          <Button onClick={() => submitDecision('approved')}>
             Approve
           </Button>
           <Button
-            onClick={() => onDecide(transaction.transactionId, 'dismissed')}
+            onClick={() => submitDecision('dismissed')}
             variant="outline"
           >
             Dismiss
           </Button>
           <Button
-            onClick={() => onDecide(transaction.transactionId, 'escalated')}
+            onClick={() => submitDecision('escalated')}
             variant="danger"
           >
             Escalate

@@ -11,6 +11,7 @@ import type {
   ReviewDecision,
   RiskReason,
   TransactionFlag,
+  DecisionFeedback,
 } from '../types'
 
 export type { ReviewSessionData, ReviewSummary }
@@ -117,6 +118,8 @@ type BackendReviewLogEntry = {
   transaction_id: string
   action: 'approve' | 'dismiss' | 'escalate'
   reviewer_notes?: string | null
+  feedback_reason_codes?: string[]
+  feedback_reasoning?: string | null
   reviewed_at: string
 }
 
@@ -449,18 +452,26 @@ export async function uploadTransactionsCsv(file: File): Promise<ReviewSessionDa
 
 export async function submitReviewDecision({
   decision,
+  feedback,
   fileHash,
   transactionId,
 }: {
   decision: ReviewDecision
+  feedback?: DecisionFeedback
   fileHash: string
   transactionId: string
 }) {
   const action = decisionToBackendAction(decision)
+  const feedbackReasoning = feedback?.reasoning.trim()
   const response = await fetch(
     `${apiBaseUrl}/review/${fileHash}/${transactionId}/${action}`,
     {
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({
+        action,
+        feedback_reason_codes: feedback?.reasonCodes ?? [],
+        feedback_reasoning: feedbackReasoning || undefined,
+        reviewer_notes: feedbackReasoning || undefined,
+      }),
       headers: {
         'Content-Type': 'application/json',
       },
@@ -494,7 +505,8 @@ export async function fetchReviewLog(
     .map((item) => ({
       transactionId: item.transaction_id,
       action: backendActionToDecision(item.action),
-      reviewerNotes: item.reviewer_notes ?? undefined,
+      reviewerNotes:
+        item.feedback_reasoning ?? item.reviewer_notes ?? undefined,
       reviewedAt: item.reviewed_at,
     }))
 }
@@ -789,6 +801,7 @@ function buildReasons(analysis: {
 
   if (scoreBreakdown.length > 0) {
     return scoreBreakdown.map((reason, index) => ({
+      code: reason.code,
       detail: reason.detail ?? 'Backend detector returned this signal.',
       id: `${analysis.transaction_id}-${reason.code ?? index}`,
       label: reason.label ?? reason.code ?? 'Detector signal',
