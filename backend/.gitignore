@@ -170,6 +170,10 @@ poetry.toml
 # ruff
 .ruff_cache/
 
+# Optuna study DB (offline tuning only; best params go to best_lgbm_params.json)
+algo/ops/optuna.db
+algo/ops/optuna.db-journal
+
 # LSP config files
 pyrightconfig.json
 

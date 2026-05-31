@@ -496,19 +496,15 @@ def validate_dataset_labels(
 # ---------------------------------------------------------------------------
 # 5. Train
 # ---------------------------------------------------------------------------
-def train_model(X_tr, y_tr):
+def train_model(X_tr, y_tr, *, params: Optional[Dict[str, Any]] = None):
+    """Train LightGBM. Optional ``params`` overrides defaults (e.g. from ``lgbm_params.load_lgbm_params``)."""
+    from algo.lgbm_params import merge_lgbm_params
+
     pos = int(y_tr.sum())
     neg = len(y_tr) - pos
+    lgbm_kw = merge_lgbm_params(params)
     model = LGBMClassifier(
-        n_estimators=600,
-        learning_rate=0.03,
-        num_leaves=64,
-        min_child_samples=50,
-        subsample=0.8,
-        subsample_freq=1,
-        colsample_bytree=0.8,
-        reg_lambda=1.0,
-        max_bin=127,                       # smaller histograms = less memory
+        **lgbm_kw,
         scale_pos_weight=neg / max(pos, 1),  # imbalance handling
         objective="binary",
         n_jobs=-1,

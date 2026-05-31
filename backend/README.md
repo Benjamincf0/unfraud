@@ -99,6 +99,32 @@ Run the test suite:
 uv run --extra test python -m pytest -q
 ```
 
+## Offline hyperparameter tuning (optional)
+
+LightGBM search is **not** wired into `FraudDetectionPipeline.fit()`. Run it manually when you want to refine validation PR-AUC, then integrate saved params later.
+
+```bash
+cd backend
+uv sync --extra tune
+uv run --extra tune python -m algo.tune_lgbm fraudTrain_part1.csv --n-trials 40
+```
+
+Outputs:
+
+- `algo/ops/best_lgbm_params.json` — best params + metadata (commit if you want reproducible training)
+- `algo/ops/optuna.db` — study history for resume (gitignored)
+
+To use tuned params in training (when you choose to):
+
+```python
+from algo.lgbm_params import load_lgbm_params
+from algo.algo import train_model
+
+model = train_model(X_tr, y_tr, params=load_lgbm_params())
+```
+
+Ephemeral study (no SQLite): add `--no-storage`.
+
 ## Exporting the challenge CSV
 
 From the repo root:
