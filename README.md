@@ -26,6 +26,10 @@ make export
 
 The committed `analyzed_transactions.csv` is the current detector output for the challenge dataset. It preserves the original transaction fields and adds `is_fraud`, `fraud_score`, `fraud_reasons`, explainability JSON, card/cross-card feature columns, and review handoff columns.
 
+## Backend documentation
+
+Full backend guides (API, both scorers, ML training, operations) for technical and non-technical readers: [backend/docs/README.md](backend/docs/README.md).
+
 ## Detection Strategy
 
 The detector in `backend/fraud_scorer.py` (wired through `backend/main.py`) uses a weighted rules model built around temporal baselines rather than static absolute thresholds:
