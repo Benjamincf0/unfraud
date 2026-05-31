@@ -26,6 +26,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from algo.algo import DEFAULT_MODEL_PATH
+from fraud_scorer import simple_fraud_detection
 from ml_fraud_scorer import ModelNotAvailableError, get_pipeline, is_model_available, ml_fraud_detection
 
 
@@ -88,54 +89,78 @@ def _classification_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, f
     }
 
 
+def _pct(n: int, total: int) -> str:
+    if not total:
+        return "0.0%"
+    return f"{100.0 * n / total:.1f}%"
+
+
 def _print_summary(
     scored: pd.DataFrame,
     *,
     threshold: float,
     input_path: Path,
     ground_truth: pd.Series | None,
+    heuristic_flags: int | None = None,
 ) -> None:
     total = len(scored)
-    flagged = scored["is_fraud"].astype(bool)
-    n_flagged = int(flagged.sum())
-    pct = (100.0 * n_flagged / total) if total else 0.0
-
-    model_only = int((scored["flagged_by_model"] & ~scored["flagged_by_rules"]).sum())
-    rules_only = int((scored["flagged_by_rules"] & ~scored["flagged_by_model"]).sum())
+    hybrid = scored["is_fraud"].astype(bool)
+    model_only_mask = scored["flagged_by_model"] & ~scored["flagged_by_rules"]
+    n_hybrid = int(hybrid.sum())
+    n_model_only = int(model_only_mask.sum())
+    n_model_hits = int(scored["flagged_by_model"].sum())
+    n_alert_hits = int(scored["flagged_by_rules"].sum())
+    alerts_only = int((scored["flagged_by_rules"] & ~scored["flagged_by_model"]).sum())
     both = int((scored["flagged_by_model"] & scored["flagged_by_rules"]).sum())
-    model_hits = int(scored["flagged_by_model"].sum())
-    rule_hits = int(scored["flagged_by_rules"].sum())
 
     print(f"Input:     {input_path}")
     print(f"Rows:      {total}")
     print(f"Threshold: {threshold:.4f} (from model artifact)")
     print()
-    print(f"Flagged (fraud alerts): {n_flagged} ({pct:.1f}% of rows)")
-    print(f"  — model probability ≥ threshold: {model_hits}")
-    print(f"  — any guardrail rule fired:      {rule_hits}")
-    print(f"  — flagged by model only:         {model_only}")
-    print(f"  — flagged by rules only:         {rules_only}")
+    print("Review queue size (not the same as ~7% ground-truth fraud rate):")
+    print(
+        f"  Hybrid (model OR rules — used by API / export): "
+        f"{n_hybrid} ({_pct(n_hybrid, total)})"
+    )
+    print(
+        f"  Model-only (probability ≥ threshold, no rule): "
+        f"{n_model_only} ({_pct(n_model_only, total)})"
+    )
+    if heuristic_flags is not None:
+        print(
+            f"  Heuristic scorer (reference):                  "
+            f"{heuristic_flags} ({_pct(heuristic_flags, total)})"
+        )
+    print()
+    print("Hybrid breakdown:")
+    print(f"  — model probability ≥ threshold: {n_model_hits}")
+    print(f"  — high-confidence rule alert:    {n_alert_hits}")
+    print(f"  — flagged by model only:         {n_model_only}")
+    print(f"  — flagged by alert only:         {alerts_only}")
     print(f"  — flagged by both:               {both}")
 
     if ground_truth is not None:
-        metrics = _classification_metrics(ground_truth, scored["is_fraud"])
-        print()
-        print("Ground truth (is_fraud column in input CSV):")
-        print(f"  Known fraud rows: {metrics['true_fraud']}")
-        print(f"  Known legit rows: {metrics['true_legit']}")
-        print(
-            f"  Precision: {metrics['precision']:.4f}  "
-            f"Recall: {metrics['recall']:.4f}  F1: {metrics['f1']:.4f}"
-        )
-        print(
-            f"  Confusion — TP: {metrics['tp']}  FP: {metrics['fp']}  "
-            f"FN: {metrics['fn']}  TN: {metrics['tn']}"
-        )
+        for label, pred in (
+            ("Hybrid", scored["is_fraud"]),
+            ("Model-only", model_only_mask),
+        ):
+            metrics = _classification_metrics(ground_truth, pred)
+            print()
+            print(f"Ground truth vs {label}:")
+            print(f"  Known fraud rows: {metrics['true_fraud']}")
+            print(
+                f"  Precision: {metrics['precision']:.4f}  "
+                f"Recall: {metrics['recall']:.4f}  F1: {metrics['f1']:.4f}"
+            )
+            print(
+                f"  Confusion — TP: {metrics['tp']}  FP: {metrics['fp']}  "
+                f"FN: {metrics['fn']}  TN: {metrics['tn']}"
+            )
     else:
         print()
         print(
-            "Note: transactions.csv has no fraud labels. "
-            "Counts above are detector flags, not confirmed fraud."
+            "Note: challenge CSV has no labels. ~7% is hidden true fraud; "
+            "flag counts are review-queue size, not fraud prevalence."
         )
 
 
@@ -167,11 +192,14 @@ def main() -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    heuristic_flags = int(simple_fraud_detection(transactions)["is_fraud"].sum())
+
     _print_summary(
         scored,
         threshold=float(pipeline.threshold),
         input_path=input_path,
         ground_truth=ground_truth,
+        heuristic_flags=heuristic_flags,
     )
 
     if args.list_flagged:

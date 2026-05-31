@@ -44,7 +44,9 @@ If **any** of six guardrails fires, the combined score gets up to **+0.35** (cap
 Alert if:
 
 - Model probability ≥ **threshold** (saved in the model file, chosen during training), **OR**
-- Any guardrail is true.
+- A **high-confidence guardrail** fires (`rule_alert` — strict amount, velocity, geo, cross-card burst).
+
+Softer guardrail hits still add up to **+0.35** to the combined score (`rule_guardrail`) so borderline model scores can surface, without every soft signal auto-queuing a review (which was over-flagging ~30% on the challenge CSV).
 
 ## The six guardrails (plain English)
 
@@ -52,7 +54,7 @@ Alert if:
 |------|------------|
 | **Amount** | Spend is far above this card’s norm (≥ 3σ) or above this **category** norm (≥ 3.5σ) |
 | **Velocity** | Many transactions in 5 minutes (≥ 4) or 1 hour (≥ 8) on the same card |
-| **Geo** | Cross-border payment **and** country changed vs previous transaction or fast hop (< 1 hour) |
+| **Geo** | First merchant country for this card, **or** cross-border fast hop (< 1 h) **with** amount/identity corroboration (aligned with heuristic geo) |
 | **Off-hours** | Unusual hour for this card **and** elevated amount |
 | **Device / IP** | Same device or IP seen on ≥ 3 different cards in 24 hours |
 | **Merchant burst** | Same merchant has ≥ 4 transactions in 30 minutes across ≥ 3 cards in 2 hours |

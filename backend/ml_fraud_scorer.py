@@ -107,7 +107,12 @@ def _model_decisions(
     featured = apply_rule_guardrails(build_features(shrink(working.copy())))
     model_prob, combined = pipeline.hybrid_scores(featured, prepare_features(featured))
     threshold = pipeline.threshold
-    flagged = (model_prob >= threshold) | featured["rule_guardrail"].values
+    rule_alert = (
+        featured["rule_alert"].values
+        if "rule_alert" in featured.columns
+        else featured["rule_guardrail"].values
+    )
+    flagged = (model_prob >= threshold) | rule_alert
 
     decisions = pd.DataFrame(
         {
@@ -116,7 +121,7 @@ def _model_decisions(
             "fraud_score": np.round(combined, 4),
             "is_fraud": flagged,
             "flagged_by_model": (model_prob >= threshold),
-            "flagged_by_rules": featured["rule_guardrail"].values,
+            "flagged_by_rules": rule_alert,
         }
     )
     return decisions, featured
