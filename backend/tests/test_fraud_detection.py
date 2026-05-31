@@ -1,6 +1,7 @@
 import pandas as pd
 import sys
 import os
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from fraud_scorer import simple_fraud_detection
 
@@ -101,6 +102,101 @@ def test_edge_cases():
     result = simple_fraud_detection(zero_df)
     assert result.loc[0, 'amount_ratio'] == 1.0
     assert result.loc[0, 'is_fraud'] == False
+
+
+def _reason_codes(row):
+    return {reason["code"] for reason in json.loads(row["score_breakdown"])}
+
+
+def test_heuristic_covers_velocity_and_card_testing_patterns():
+    df = pd.DataFrame({
+        "transaction_id": ["tx_001", "tx_002", "tx_003", "tx_004", "tx_005"],
+        "timestamp": [
+            "2026-04-25T10:00:00",
+            "2026-04-25T10:01:00",
+            "2026-04-25T10:02:00",
+            "2026-04-25T10:03:00",
+            "2026-04-25T10:04:00",
+        ],
+        "card_id": ["card_velocity"] * 5,
+        "amount": [20.0, 21.0, 19.0, 20.0, 5.0],
+        "merchant_name": ["Store A", "Store A", "Store A", "Store A", "QuickPay Online"],
+        "merchant_category": ["grocery", "grocery", "grocery", "grocery", "online_retail"],
+        "channel": ["online"] * 5,
+        "cardholder_country": ["US"] * 5,
+        "merchant_country": ["US"] * 5,
+        "device_id": ["dev_1", "dev_1", "dev_1", "dev_1", "dev_new"],
+        "ip_address": ["10.0.0.1", "10.0.0.1", "10.0.0.1", "10.0.0.1", "10.0.0.2"],
+    })
+
+    result = simple_fraud_detection(df)
+    row = result[result["transaction_id"] == "tx_005"].iloc[0]
+    codes = _reason_codes(row)
+
+    assert bool(row["is_fraud"]) is True
+    assert "velocity_spike" in codes
+    assert "card_testing_amount" in codes
+    assert int(row["tx_5min"]) == 5
+
+
+def test_heuristic_covers_time_and_geo_hop_patterns():
+    df = pd.DataFrame({
+        "transaction_id": ["tx_001", "tx_002", "tx_003", "tx_004"],
+        "timestamp": [
+            "2026-04-22T10:00:00",
+            "2026-04-23T10:00:00",
+            "2026-04-24T10:00:00",
+            "2026-04-24T10:30:00",
+        ],
+        "card_id": ["card_geo"] * 4,
+        "amount": [30.0, 31.0, 29.0, 160.0],
+        "merchant_name": ["Store A", "Store A", "Store A", "Travel Site"],
+        "merchant_category": ["grocery", "grocery", "grocery", "travel"],
+        "channel": ["online"] * 4,
+        "cardholder_country": ["US"] * 4,
+        "merchant_country": ["US", "US", "US", "GB"],
+        "device_id": ["dev_1"] * 4,
+        "ip_address": ["10.0.0.1"] * 4,
+    })
+
+    result = simple_fraud_detection(df)
+    row = result[result["transaction_id"] == "tx_004"].iloc[0]
+    codes = _reason_codes(row)
+
+    assert bool(row["is_fraud"]) is True
+    assert "rapid_geo_hop" in codes
+    assert int(row["fast_country_hop"]) == 1
+
+
+def test_heuristic_covers_threshold_and_missing_identity_patterns():
+    df = pd.DataFrame({
+        "transaction_id": ["tx_001", "tx_002", "tx_003", "tx_004"],
+        "timestamp": [
+            "2026-04-22T09:00:00",
+            "2026-04-23T09:00:00",
+            "2026-04-24T09:00:00",
+            "2026-04-25T09:00:00",
+        ],
+        "card_id": ["card_identity"] * 4,
+        "amount": [12.0, 13.0, 11.0, 99.75],
+        "merchant_name": ["Store A", "Store A", "Store A", "QuickPay Online"],
+        "merchant_category": ["grocery", "grocery", "grocery", "online_retail"],
+        "channel": ["online"] * 4,
+        "cardholder_country": ["US"] * 4,
+        "merchant_country": ["US"] * 4,
+        "device_id": ["dev_1", "dev_1", "dev_1", None],
+        "ip_address": ["10.0.0.1", "10.0.0.1", "10.0.0.1", None],
+    })
+
+    result = simple_fraud_detection(df)
+    row = result[result["transaction_id"] == "tx_004"].iloc[0]
+    codes = _reason_codes(row)
+
+    assert bool(row["is_fraud"]) is True
+    assert "threshold_probe_amount" in codes
+    assert "identity_missing" in codes
+    assert int(row["device_missing"]) == 1
+    assert int(row["ip_missing"]) == 1
 
 if __name__ == '__main__':
     test_simple_fraud_detection()
