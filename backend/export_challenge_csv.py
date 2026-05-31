@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from main import simple_fraud_detection
+from fraud_scorer import simple_fraud_detection
 
 
 ROOT = Path(__file__).resolve().parents[1]

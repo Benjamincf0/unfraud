@@ -28,13 +28,15 @@ The committed `analyzed_transactions.csv` is the current detector output for the
 
 ## Detection Strategy
 
-The detector in `backend/main.py` uses a weighted rules model built around temporal baselines rather than static absolute thresholds:
+The detector in `backend/fraud_scorer.py` (wired through `backend/main.py`) uses a weighted rules model built around temporal baselines rather than static absolute thresholds:
 
 - Per-card baselines: historical median/mean/std amount, prior category/device/IP/country usage, and transaction count before the current row.
+- Per-card × merchant_category baselines: amount ratio and z-score within the same category on that card (e.g. a large grocery charge vs this card's usual grocery spend).
 - Cross-card signals: shared device fanout, shared IP fanout, merchant transaction bursts over 30 minutes, and unique-card merchant bursts over 2 hours.
+- Geo scoring is conditional: cross-border alone does not flag; it must pair with amount or identity anomalies, or be a first-seen merchant country for the card.
 - Explainability: every scored transaction carries ordered reason objects with labels, details, weights, signal type, observed value, and baseline.
 
-On the provided dataset the current detector processes all 1,000 rows and flags 58 transactions. The hidden labels are not available, so tuning is intentionally conservative to avoid flooding the reviewer queue.
+On the provided dataset the current detector processes all 1,000 rows and flags 61 transactions. The hidden labels are not available, so tuning is intentionally conservative to avoid flooding the reviewer queue.
 
 ## Reviewer Workflow
 

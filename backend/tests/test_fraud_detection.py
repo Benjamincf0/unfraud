@@ -2,7 +2,7 @@ import pandas as pd
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from main import simple_fraud_detection
+from fraud_scorer import simple_fraud_detection
 
 def test_simple_fraud_detection():
     """Test per-card + cross-card explainable scoring."""
@@ -37,7 +37,7 @@ def test_simple_fraud_detection():
     outlier = result_df[result_df["transaction_id"] == "tx_004"].iloc[0]
     assert outlier["fraud_score"] > 0.55
     assert bool(outlier["is_fraud"]) == True
-    assert "Amount anomaly" in outlier["fraud_reasons"]
+    assert "Amount anomaly" in outlier["fraud_reasons"] or "Category amount anomaly" in outlier["fraud_reasons"]
 
     # Cross-card aggregation: same device/ip reused across multiple cards
     cross_card_row = result_df[result_df["transaction_id"] == "tx_006"].iloc[0]
