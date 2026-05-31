@@ -945,8 +945,11 @@ export function ReviewQueue({
     networkFocus,
     orderedTransactions,
     query,
+    queueCauseFilter,
     scoreIndex,
     searchScopeKeys,
+    useModel,
+    viewMode,
   ]);
 
   const visibleTransactions = useMemo(
