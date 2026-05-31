@@ -4,11 +4,13 @@ import sys
 import tempfile
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from algo.algo import (
     DriftMonitor,
     FraudDetectionPipeline,
+    _feature_reason_detail,
     apply_rule_guardrails,
     assess_feature_separation,
     build_features,
@@ -182,13 +184,24 @@ def test_shap_score_breakdown_readable():
     X, y = prepare_matrix(g)
     model = train_model(X, y)
     explainer = build_shap_explainer(model, X)
-    row = g.iloc[-1]
     breakdown = shap_score_breakdown_for_rows(explainer, g.iloc[[-1]])[0]
     assert isinstance(breakdown, list)
     if breakdown:
         assert "label" in breakdown[0]
         assert "detail" in breakdown[0]
         assert "sigma" not in breakdown[0]["detail"].lower()
+        assert "Model elevated risk" not in breakdown[0]["detail"]
+        assert sum(item["weight"] for item in breakdown) == pytest.approx(1.0, abs=0.02)
+        assert all(0 < item["weight"] <= 1 for item in breakdown)
+
+
+def test_shap_breakdown_spend_24h_detail():
+    g = _feature_frame()
+    row = g.iloc[-1].copy()
+    row["spend_24h"] = 2500.0
+    detail = _feature_reason_detail("spend_24h", row)
+    assert "$2,500.00" in detail or "$2500.00" in detail
+    assert "24 hours" in detail
 
 
 def test_shap_reason_codes():

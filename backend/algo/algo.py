@@ -873,6 +873,53 @@ def _card_amount_ratio(row: pd.Series) -> float:
     return amount / typical
 
 
+_GENERIC_DETAIL_PREFIX = "Model elevated risk from"
+
+# Internal / filler columns: skip for reviewer-facing SHAP (take next contributor).
+_SKIP_SHAP_FEATURES = frozenset(
+    {
+        "card_amt_mean_so_far",
+        "card_amt_std_so_far",
+        "amt_log",
+        "user_age",
+        "city_pop",
+    }
+)
+
+
+def _is_generic_detail(detail: str) -> bool:
+    return detail.strip().startswith(_GENERIC_DETAIL_PREFIX)
+
+
+def _format_hour(hour: int) -> str:
+    hour = int(hour) % 24
+    if hour == 0:
+        return "12:00 AM (midnight)"
+    if hour < 12:
+        return f"{hour:02d}:00 AM"
+    if hour == 12:
+        return "12:00 PM (noon)"
+    return f"{hour - 12:02d}:00 PM"
+
+
+def _normalize_breakdown_weights(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Map raw SHAP log-odds to shares (0–1) so UI ``weight * 100`` reads as % of drivers."""
+    if not items:
+        return items
+    raw_weights = [float(item.get("_shap_raw", item.get("weight", 0)) or 0) for item in items]
+    total = sum(max(0.0, value) for value in raw_weights)
+    if total <= 0:
+        share = 1.0 / len(items)
+        for item in items:
+            item["weight"] = round(share, 4)
+            item.pop("_shap_raw", None)
+        return items
+    for item, raw in zip(items, raw_weights):
+        item["weight"] = round(max(0.0, raw) / total, 4)
+        item.pop("_shap_raw", None)
+    return items
+
+
 def _feature_signal_type(name: str) -> str:
     if name in {
         "device_card_fanout_24h",
@@ -892,9 +939,11 @@ def _feature_signal_type(name: str) -> str:
 
 def _feature_reason_label(name: str, row: pd.Series) -> Optional[str]:
     """Short UI label aligned with heuristic scorer where possible."""
+    _ = row
     labels = {
         "amt_z_vs_card": "Amount anomaly",
         "amt_z_vs_category": "Category amount anomaly",
+        "amount": "Transaction amount",
         "device_change": "New device for card",
         "merchant_change": "New merchant for card",
         "cross_border": "Location deviation",
@@ -905,20 +954,26 @@ def _feature_reason_label(name: str, row: pd.Series) -> Optional[str]:
         "tx_5min": "Velocity spike",
         "tx_1h": "Velocity spike",
         "tx_1min": "Velocity spike",
-        "tx_24h": "Velocity spike",
+        "tx_24h": "High activity (24h)",
+        "spend_24h": "High recent spend",
+        "hour_of_day": "Unusual transaction time",
         "hour_never_seen_for_card": "Atypical hour",
         "hour_rarity_for_card": "Atypical hour",
+        "day_of_week": "Unusual day of week",
+        "is_weekend": "Weekend transaction",
         "distinct_categories_24h": "Unusual category mix",
         "is_night": "Night transaction",
         "amt_just_below_100": "Amount just below $100",
         "amt_just_below_500": "Amount just below $500",
+        "amt_is_round": "Round-dollar amount",
+        "amt_card_test": "Micro-charge amount",
         "device_missing": "Missing device",
         "ip_missing": "Missing IP",
+        "time_since_last": "Quick follow-up purchase",
+        "tx_of_day": "Many purchases today",
     }
     if name in labels:
         return labels[name]
-    if name.startswith("amt_") or name.startswith("tx_") or name.startswith("spend_"):
-        return name.replace("_", " ").title()
     return None
 
 
@@ -977,8 +1032,63 @@ def _feature_reason_detail(name: str, row: pd.Series) -> str:
         return f"Amount {amount:.2f} is just below a $100 threshold."
     if name == "amt_just_below_500" and val == 1:
         return f"Amount {amount:.2f} is just below a $500 threshold."
+    if name == "amount":
+        return f"Transaction amount is ${amount:,.2f}."
+    if name == "spend_24h" and val is not None:
+        return (
+            f"This card spent ${float(val):,.2f} in the last 24 hours "
+            f"(rolling total on the card, including recent activity)."
+        )
+    if name == "hour_of_day" and val is not None:
+        hour = int(val)
+        never = row.get("hour_never_seen_for_card")
+        rarity = row.get("hour_rarity_for_card")
+        if never == 1:
+            return (
+                f"Transaction at {_format_hour(hour)} — first time this card "
+                f"has paid at this hour."
+            )
+        if rarity is not None and float(rarity) >= 0.5:
+            return (
+                f"Transaction at {_format_hour(hour)} — unusual time for this "
+                f"card (only {100 * (1 - float(rarity)):.0f}% of its past txs were near this hour)."
+            )
+        return f"Transaction at {_format_hour(hour)}."
+    if name == "tx_24h" and val is not None:
+        return f"{int(val)} transactions on this card in the last 24 hours."
+    if name == "tx_1min" and val is not None and float(val) >= 2:
+        return f"{int(val)} transactions on this card in the last minute."
+    if name == "day_of_week" and val is not None:
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_name = days[int(val) % 7]
+        return f"Transaction on a {day_name}."
+    if name == "is_weekend" and val == 1:
+        return "Transaction occurred on a weekend."
+    if name == "time_since_last" and val is not None:
+        seconds = float(val)
+        if seconds >= 1e6:
+            return "First transaction on this card in the file (no prior gap)."
+        minutes = seconds / 60.0
+        if minutes < 60:
+            return f"Only {minutes:.0f} minutes since this card's previous transaction."
+        hours = minutes / 60.0
+        return f"Only {hours:.1f} hours since this card's previous transaction."
+    if name == "tx_of_day" and val is not None and float(val) >= 3:
+        return f"{int(val)} purchases on this card so far today."
+    if name == "amt_is_round" and val == 1:
+        return f"Amount ${amount:,.2f} is a round dollar value."
+    if name == "amt_card_test" and val == 1:
+        return f"Amount ${amount:,.2f} matches common card-test values ($1, $5, $10)."
+    if name == "device_missing" and val == 1:
+        return "No device identifier on this transaction (online channel expected one)."
+    if name == "ip_missing" and val == 1:
+        return "No IP address on this transaction (online channel expected one)."
+    if name in CATEGORICAL:
+        category_value = row.get(name)
+        if category_value is not None and str(category_value).strip():
+            return f"Merchant/channel context: {name.replace('_', ' ')} = '{category_value}'."
     readable = name.replace("_", " ")
-    return f"Model elevated risk from {readable}."
+    return f"{_GENERIC_DETAIL_PREFIX} {readable}."
 
 
 def _feature_reason_code(name: str, shap_val: float, row: pd.Series) -> Optional[str]:
@@ -1100,14 +1210,14 @@ def _feature_to_breakdown_item(
     row: pd.Series,
 ) -> Optional[Dict[str, Any]]:
     """One score_breakdown entry for the review UI (SHAP weight + readable detail)."""
-    if shap_val <= 0:
+    if shap_val <= 0 or name in _SKIP_SHAP_FEATURES:
+        return None
+    detail = _feature_reason_detail(name, row)
+    if _is_generic_detail(detail):
         return None
     label = _feature_reason_label(name, row)
-    if label is None and shap_val < 0.02:
-        return None
     if label is None:
-        label = name.replace("_", " ").title()
-    detail = _feature_reason_detail(name, row)
+        return None
     value: Optional[float] = None
     baseline: Optional[float] = None
     if name == "amt_z_vs_card":
@@ -1115,15 +1225,17 @@ def _feature_to_breakdown_item(
         baseline = float(row.get("card_amt_mean_so_far", 0) or 0)
     elif name == "amt_z_vs_category":
         value = float(row.get("amount", 0) or 0)
-    elif name in {"ip_card_fanout_24h", "device_card_fanout_24h"}:
+    elif name in {"ip_card_fanout_24h", "device_card_fanout_24h", "spend_24h", "tx_24h", "tx_1h", "tx_5min", "tx_1min"}:
         raw = row.get(name)
         if raw is not None:
             value = float(raw)
-            baseline = 1.0
+    elif name == "hour_of_day":
+        value = float(row.get("hour_of_day", 0) or 0)
     return {
         "code": name,
         "label": label,
         "detail": detail,
+        "_shap_raw": float(shap_val),
         "weight": round(float(shap_val), 4),
         "signal_type": _feature_signal_type(name),
         "value": None if value is None else round(value, 4),
@@ -1158,7 +1270,7 @@ def _contributions_to_score_breakdown(
             continue
         seen_labels.add(label_key)
         breakdown.append(item)
-    return sorted(breakdown, key=lambda signal: signal["weight"], reverse=True)
+    return breakdown
 
 
 def _rule_codes_to_breakdown(rule_codes: Sequence[str]) -> List[Dict[str, Any]]:
@@ -1173,7 +1285,8 @@ def _rule_codes_to_breakdown(rule_codes: Sequence[str]) -> List[Dict[str, Any]]:
                 "code": f"rule_guardrail_{index}",
                 "label": "Rule guardrail",
                 "detail": text,
-                "weight": 0.12,
+                "_shap_raw": 1.0,
+                "weight": 1.0,
                 "signal_type": "model",
                 "value": None,
                 "baseline": None,
@@ -1194,6 +1307,7 @@ def _merge_score_breakdowns(
             continue
         merged.append(item)
         seen.add(key)
+    merged = _normalize_breakdown_weights(merged)
     return sorted(merged, key=lambda signal: signal["weight"], reverse=True)
 
 

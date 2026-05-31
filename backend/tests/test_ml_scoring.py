@@ -64,6 +64,9 @@ def test_ml_scoring_uses_shap_explanations_for_flagged(monkeypatch):
         assert all("weight" in item and "detail" in item for item in breakdown)
         assert "sigma" not in json.dumps(breakdown).lower()
         assert "σ" not in json.dumps(breakdown)
+        assert "Model elevated risk" not in json.dumps(breakdown)
+        assert sum(item["weight"] for item in breakdown) == pytest.approx(1.0, abs=0.02)
+        assert all(0 < item["weight"] <= 1 for item in breakdown)
         labels = {item.get("label", "") for item in breakdown}
         assert labels
         assert breakdown != json.loads(
