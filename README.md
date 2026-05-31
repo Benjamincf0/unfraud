@@ -58,6 +58,8 @@ The default **heuristic** scorer in `backend/fraud_scorer.py` uses weighted rule
 
 - **Per-card baselines:** historical median/mean/std amount, prior category/device/IP/country usage, and transaction count before the current row.
 - **Per-card × merchant_category baselines:** amount ratio and z-score within the same category on that card.
+- **Velocity and timing:** card-level transaction bursts, 24-hour spend, rare transaction hours, night activity, and fast country hops.
+- **Payment-shape signals:** card-test amounts, just-below-threshold amounts, merchant/device changes, and missing online identity fields when paired with other risk.
 - **Cross-card signals:** shared device fanout, shared IP fanout, merchant transaction bursts over 30 minutes, and unique-card merchant bursts over 2 hours.
 - **Reviewer feedback:** when a reviewer escalates a transaction, other rows sharing that IP receive a session risk boost and a “Previously escalated IP” explanation.
 - **Geo scoring is conditional:** cross-border alone does not flag; it must pair with amount or identity anomalies, or be a first-seen merchant country for the card.
@@ -65,7 +67,7 @@ The default **heuristic** scorer in `backend/fraud_scorer.py` uses weighted rule
 
 An optional **ML scorer** (LightGBM + guardrail rules) is available when `algo/ops/fraud_model.pkl` is present; the UI can compare both. See [backend/docs/05-machine-learning-model.md](backend/docs/05-machine-learning-model.md).
 
-On the provided dataset the heuristic detector processes all 1,000 rows and flags 61 transactions. Hidden labels are not available, so tuning is intentionally conservative to avoid flooding the reviewer queue.
+On the provided dataset the heuristic detector processes all 1,000 rows and flags 109 transactions. Hidden labels are not available, so tuning keeps the queue focused while covering the broader ML-aligned pattern families.
 
 ## Reviewer workflow
 

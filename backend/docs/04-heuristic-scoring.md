@@ -7,7 +7,8 @@ This is the **default** engine used by the live API and by `make export`. It liv
 For each transaction, the system asks:
 
 1. **Compared to this card’s past**, is the amount, category, device, IP, or country unusual?
-2. **Compared to all cards in the file**, is this device, IP, or merchant involved in suspicious sharing or bursts?
+2. **Compared to this card’s recent flow**, is there a burst of transactions, a spend spike, a rare hour, or a fast country hop?
+3. **Compared to all cards in the file**, is this device, IP, or merchant involved in suspicious sharing or bursts?
 
 Those answers become partial “risk scores” that are added together, capped at 1.0. If the total crosses a threshold—or a rare **high-confidence rule** fires—the transaction is flagged.
 
@@ -49,6 +50,30 @@ Novelty alone is not always fraud; it combines with amount and other signals.
 - **Foreign country** — cardholder country ≠ merchant country.
 - Cross-border risk is **damped** unless there is also an amount or identity anomaly (avoids flagging every international purchase).
 - **Novel country** adds stronger geo risk.
+- **Rapid country hop** catches a cross-border merchant-country change soon after the previous card transaction.
+
+### Velocity and timing
+
+The heuristic mirrors the ML model’s operational signals with transparent rules:
+
+| Signal | Meaning |
+|--------|---------|
+| **Velocity spike** | Many transactions on the same card in 1 minute, 5 minutes, or 1 hour |
+| **High recent spend** | Rolling 24-hour spend is high relative to the card’s typical transaction |
+| **Unusual transaction time** | First-seen or rare hour for this card, or night activity paired with other risk |
+| **Merchant/device change** | Merchant or online device changed vs the prior card transaction and another risk signal is present |
+
+These signals are deliberately combination-based so normal busy days or late-night purchases do not flood the queue by themselves.
+
+### Payment-shape and identity signals
+
+Some fraud starts with small probes or missing identity context:
+
+| Signal | Meaning |
+|--------|---------|
+| **Card testing amount** | Online `$1`, `$5`, or `$10` transaction paired with velocity or identity risk |
+| **Threshold probing amount** | Online amount just below `$100` or `$500`, paired with other risk |
+| **Missing online identity** | Online transaction missing device and/or IP while another risk signal is present |
 
 ## Cross-card signals
 
@@ -89,6 +114,14 @@ Core heuristic **components** contribute weighted risk (each capped, then summed
 | Device reuse (cross-card) | Shared device | ~11% |
 | IP reuse (cross-card) | Shared IP | ~9% |
 | Merchant burst (cross-card) | Velocity across cards | ~14% |
+| Velocity spike | Rapid card activity | ~10% |
+| Recent spend spike | High 24-hour spend | ~6% |
+| Time anomaly | Rare hour / night activity with corroboration | ~6% |
+| Rapid geo hop | Cross-border country change soon after prior tx | ~8% |
+| Merchant/device change | Previous-transaction change with corroboration | ~5% |
+| Card testing amount | Small online probe amounts with corroboration | ~6% |
+| Threshold probing amount | Just-below-threshold online amounts | ~4% |
+| Missing online identity | Missing device/IP with corroboration | ~5% |
 
 Exact weights are defined in code; the table reflects the intended emphasis.
 
@@ -101,7 +134,11 @@ Two paths:
    - Amount ≥ 7× card median, or
    - Strong category amount spike with history, or
    - IP used on ≥ 4 cards, or
-   - Merchant seen on ≥ 7 unique cards in 2 hours.
+   - Merchant seen on ≥ 7 unique cards in 2 hours, or
+   - Velocity spike with a new device/IP, or
+   - Fast cross-border country hop, or
+   - First-seen transaction hour with an amount anomaly, or
+   - Card-test amount on a shared device/IP.
 
 ## Explainability
 
@@ -115,7 +152,7 @@ Every flagged row gets a **score breakdown**: ordered list of reasons with:
 Additional JSON bundles:
 
 - **card_baseline** — history count, typical amounts, usual categories/countries/devices/IPs
-- **cross_card_signals** — fanout and burst counts
+- **cross_card_signals** — fanout, burst, change, hop, and missing-identity counts
 - **card_amount_series** — recent points for sparkline charts
 
 ## Strengths and limitations
