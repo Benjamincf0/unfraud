@@ -1,5 +1,17 @@
 import type { TransactionFlag } from '../types'
 
+const GENERIC_REASON_DETAILS = new Set([
+  'Backend detector returned a positive score without a specific reason.',
+  'Backend detector returned this signal.',
+  'Flag returned by the backend fraud detector.',
+])
+
+function hasDetailedReasons(transaction: TransactionFlag) {
+  return transaction.reasons.some(
+    (reason) => !GENERIC_REASON_DETAILS.has(reason.detail),
+  )
+}
+
 export function mergeTransactionMaps(
   current: Map<string, TransactionFlag>,
   items: TransactionFlag[],
@@ -12,6 +24,11 @@ export function mergeTransactionMaps(
 
   for (const item of items) {
     const existing = next.get(item.transactionId)
+    const preserveScoring =
+      existing !== undefined &&
+      hasDetailedReasons(existing) &&
+      !hasDetailedReasons(item)
+
     next.set(
       item.transactionId,
       existing
@@ -21,6 +38,15 @@ export function mergeTransactionMaps(
             decision: existing.decision,
             reviewedAt: existing.reviewedAt ?? item.reviewedAt,
             reviewerNotes: existing.reviewerNotes ?? item.reviewerNotes,
+            ...(preserveScoring
+              ? {
+                  cardContext: existing.cardContext,
+                  isFraud: existing.isFraud,
+                  label: existing.label,
+                  reasons: existing.reasons,
+                  score: existing.score,
+                }
+              : {}),
           }
         : item,
     )

@@ -408,6 +408,39 @@ export function ReviewQueue({
           );
         }
 
+        const relatedHeuristic = await fetchRelatedTransactions(
+          fileHash,
+          activeId,
+          false,
+        );
+        if (cancelled) {
+          return;
+        }
+
+        setRelatedById((current) => {
+          const next = new Map(current);
+          next.set(activeId, relatedHeuristic);
+          return next;
+        });
+        setHeuristicById((current) =>
+          mergeTransactionMaps(current, relatedHeuristic),
+        );
+
+        if (summary.mlModelAvailable) {
+          const relatedModel = await fetchRelatedTransactions(
+            fileHash,
+            activeId,
+            true,
+          );
+          if (cancelled) {
+            return;
+          }
+
+          setModelById((current) =>
+            mergeTransactionMaps(current, relatedModel),
+          );
+        }
+
         const detail = await fetchTransactionDetail(fileHash, activeId);
         if (cancelled) {
           return;
@@ -447,37 +480,6 @@ export function ReviewQueue({
             );
             return next;
           });
-        }
-
-        const relatedHeuristic = await fetchRelatedTransactions(
-          fileHash,
-          activeId,
-          false,
-        );
-        if (cancelled) {
-          return;
-        }
-
-        setRelatedById((current) => {
-          const next = new Map(current);
-          next.set(activeId, relatedHeuristic);
-          return next;
-        });
-        setHeuristicById((current) =>
-          mergeTransactionMaps(current, relatedHeuristic),
-        );
-
-        if (summary.mlModelAvailable) {
-          const relatedModel = await fetchRelatedTransactions(
-            fileHash,
-            activeId,
-            true,
-          );
-          if (!cancelled) {
-            setModelById((current) =>
-              mergeTransactionMaps(current, relatedModel),
-            );
-          }
         }
 
         enrichedIdsRef.current.add(activeId);
