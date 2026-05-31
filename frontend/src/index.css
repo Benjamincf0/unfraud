@@ -314,6 +314,28 @@ button:disabled {
   gap: 6px;
 }
 
+.tuning-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 280px));
+  gap: 10px 16px;
+  padding-bottom: 10px;
+}
+
+.tuning-control {
+  display: grid;
+  grid-template-columns: 112px minmax(120px, 1fr) 42px;
+  gap: 10px;
+  align-items: center;
+  color: #a8a8b3;
+  font-size: 12px;
+}
+
+.tuning-control strong {
+  color: #f0f0f0;
+  font-size: 12px;
+  text-align: right;
+}
+
 .search-chip {
   min-height: 28px;
   border: 1px solid #3b3b44;
@@ -337,6 +359,10 @@ button:disabled {
   align-items: start;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.review-layout-with-audit {
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr) minmax(240px, 300px);
 }
 
 .card,
@@ -1000,18 +1026,29 @@ button:disabled {
 }
 
 .audit-log {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 12px;
-  border-top: 1px solid #2c2c33;
-  margin-top: 14px;
-  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid #2c2c33;
+  border-radius: 8px;
+  background: #16161a;
 }
 
 .audit-log-header {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #2c2c33;
+  padding: 12px;
+}
+
+.audit-log-header div {
+  display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .audit-log-header strong {
@@ -1027,16 +1064,27 @@ button:disabled {
 
 .audit-log-list {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.audit-log-empty {
+  color: #a8a8b3;
+  font-size: 13px;
+  padding: 4px;
 }
 
 .audit-log-row {
   display: grid;
-  min-width: 168px;
+  width: 100%;
+  min-height: 60px;
   border: 1px solid #2c2c33;
   border-radius: 7px;
-  background: #16161a;
+  background: #121215;
   color: #f0f0f0;
   padding: 8px 10px;
   text-align: left;
@@ -1257,6 +1305,10 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .review-layout-with-audit {
+    grid-template-columns: 1fr;
+  }
+
   .geo-usage-layout {
     grid-template-columns: 1fr;
   }
@@ -1308,6 +1360,15 @@ button:disabled {
 
   .threshold-control {
     grid-template-columns: 1fr;
+  }
+
+  .tuning-controls,
+  .tuning-control {
+    grid-template-columns: 1fr;
+  }
+
+  .tuning-control strong {
+    text-align: left;
   }
 
   .detail-grid,

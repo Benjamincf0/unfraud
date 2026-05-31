@@ -7,6 +7,7 @@ import type {
 } from '../types'
 
 export type ReviewDataResult = {
+  allItems: TransactionFlag[]
   fileHash: string
   items: TransactionFlag[]
   source: 'cache' | 'upload'
@@ -112,7 +113,6 @@ export async function uploadTransactionsCsv(
   file: File,
   useModel = false,
 ): Promise<ReviewDataResult> {
-  const csvTransactions = parseTransactionsCsv(await file.text())
   const formData = new FormData()
   formData.append('file', file)
 
@@ -131,24 +131,12 @@ export async function uploadTransactionsCsv(
     throw new Error('Upload returned an invalid file hash')
   }
 
-  const analysisResponse = await fetch(
-    withUseModel(
-      `${apiBaseUrl}/analysis/all/${uploadPayload.file_hash}`,
-      useModel,
-    ),
-  )
-
-  if (!analysisResponse.ok) {
-    throw new Error(
-      await getErrorMessage(analysisResponse, 'Analysis failed'),
-    )
-  }
-
-  const analysis = (await analysisResponse.json()) as BackendFraudAnalysis[]
+  const result = await fetchReviewDataByHash(uploadPayload.file_hash, useModel)
 
   return {
+    allItems: result.allItems,
     fileHash: uploadPayload.file_hash,
-    items: mergeTransactionsWithAnalysis(csvTransactions, analysis),
+    items: result.items,
     source: 'upload',
     useModel,
   }
@@ -167,10 +155,16 @@ export async function fetchReviewDataByHash(
   }
 
   const csv = await exportResponse.text()
+  const analyzedTransactions = parseAnalyzedTransactionsCsv(csv)
 
   return {
+    allItems: mapAnalyzedTransactions(analyzedTransactions, {
+      suspiciousOnly: false,
+    }),
     fileHash,
-    items: mapAnalyzedTransactions(parseAnalyzedTransactionsCsv(csv)),
+    items: mapAnalyzedTransactions(analyzedTransactions, {
+      suspiciousOnly: true,
+    }),
     source: 'cache',
     useModel,
   }
@@ -255,61 +249,6 @@ export async function fetchCardAnalysis({
   }
 
   return toCardAnalysis(cardId, payload.map(normalizeCardTransactionPayload))
-}
-
-function parseTransactionsCsv(csv: string): CsvTransaction[] {
-  const rows = parseCsvRows(csv)
-
-  if (rows.length < 2) {
-    throw new Error('CSV file is empty')
-  }
-
-  const [headers, ...dataRows] = rows
-  const headerIndex = new Map(headers.map((header, index) => [header, index]))
-  const requiredHeaders = [
-    'transaction_id',
-    'timestamp',
-    'card_id',
-    'amount',
-    'merchant_name',
-    'merchant_category',
-    'channel',
-    'cardholder_country',
-    'merchant_country',
-  ]
-
-  const missingHeaders = requiredHeaders.filter(
-    (header) => !headerIndex.has(header),
-  )
-
-  if (missingHeaders.length > 0) {
-    throw new Error(`CSV is missing required columns: ${missingHeaders.join(', ')}`)
-  }
-
-  return dataRows
-    .filter((row) => row.some((value) => value.trim()))
-    .map((row) => {
-      const get = (header: string) => row[headerIndex.get(header) ?? -1] ?? ''
-      const amount = Number(get('amount'))
-
-      if (!Number.isFinite(amount)) {
-        throw new Error(`Invalid amount for transaction ${get('transaction_id')}`)
-      }
-
-      return {
-        amount,
-        card_id: get('card_id'),
-        cardholder_country: get('cardholder_country'),
-        channel: normalizeChannel(get('channel')),
-        device_id: emptyToUndefined(get('device_id')),
-        ip_address: emptyToUndefined(get('ip_address')),
-        merchant_category: get('merchant_category'),
-        merchant_country: get('merchant_country'),
-        merchant_name: get('merchant_name'),
-        timestamp: get('timestamp'),
-        transaction_id: get('transaction_id'),
-      }
-    })
 }
 
 function parseAnalyzedTransactionsCsv(csv: string): AnalyzedCsvTransaction[] {
@@ -435,46 +374,13 @@ function parseCsvRows(csv: string): string[][] {
   return rows
 }
 
-function mergeTransactionsWithAnalysis(
-  transactions: CsvTransaction[],
-  analysis: BackendFraudAnalysis[],
-): TransactionFlag[] {
-  const analysisById = new Map(
-    analysis.map((item) => [item.transaction_id, item]),
-  )
-  const contextByCard = buildCardContext(transactions)
-
-  return transactions
-    .map((transaction) => {
-      const fraudAnalysis = analysisById.get(transaction.transaction_id)
-
-      if (!fraudAnalysis) {
-        return null
-      }
-
-      return toTransactionFlag(
-        transaction,
-        fraudAnalysis,
-        contextByCard.get(transaction.card_id),
-      )
-    })
-    .filter(
-      (
-        transaction,
-      ): transaction is TransactionFlag & { isFraudCandidate: boolean } =>
-        transaction !== null &&
-        (transaction.isFraudCandidate || transaction.score > 0),
-    )
-    .map(stripFraudCandidateMarker)
-    .sort((first, second) => second.score - first.score)
-}
-
 function mapAnalyzedTransactions(
   transactions: AnalyzedCsvTransaction[],
+  { suspiciousOnly }: { suspiciousOnly: boolean },
 ): TransactionFlag[] {
   const contextByCard = buildCardContext(transactions)
 
-  return transactions
+  const mappedTransactions = transactions
     .map((transaction) =>
       toTransactionFlag(
         transaction,
@@ -491,10 +397,14 @@ function mapAnalyzedTransactions(
         transaction.reviewer_notes,
       ),
     )
-    .filter(
-      (transaction) => transaction.isFraudCandidate || transaction.score > 0,
-    )
     .map(stripFraudCandidateMarker)
+
+  return (suspiciousOnly
+    ? mappedTransactions.filter(
+        (transaction) => transaction.isFraud || transaction.score > 0,
+      )
+    : mappedTransactions
+  )
     .sort((first, second) => second.score - first.score)
 }
 

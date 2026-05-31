@@ -1,88 +1,106 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
-import { QueueList } from './review/QueueList'
-import { Button } from './ui/button'
-import { Input } from './ui/input'
-import { Tabs } from './ui/tabs'
-import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
-import type { ReviewSession } from '../lib/reviewSessions'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  EmptyTransactionDetail,
+  TransactionDetail,
+} from "./review/TransactionDetail";
+import { QueueList } from "./review/QueueList";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Slider } from "./ui/slider";
+import { Tabs } from "./ui/tabs";
+import {
+  fetchCardAnalysis,
+  fetchReviewLog,
+  submitReviewDecision,
+} from "../api/review";
+import type { ReviewSession } from "../lib/reviewSessions";
 import type {
   DecisionAction,
   ReviewDecision,
   SearchFieldKey,
+  ReviewLogEntry,
   TransactionFlag,
-} from '../types'
+} from "../types";
 
-type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
+type QueueFilter = "pending" | "all" | "approved" | "dismissed" | "escalated";
 
-type SearchMode = 'all' | 'single' | 'custom'
+type SearchMode = "all" | "single" | "custom";
 
 type ReviewQueueProps = {
-  activeFileHash: string
-  fileHash: string
-  items: TransactionFlag[]
-  onReset: () => void
-  onSelectSession: (fileHash: string) => void
-  sessions: ReviewSession[]
-  useModel: boolean
-}
+  activeFileHash: string;
+  allItems: TransactionFlag[];
+  fileHash: string;
+  items: TransactionFlag[];
+  onReset: () => void;
+  onSelectSession: (fileHash: string) => void;
+  sessions: ReviewSession[];
+  useModel: boolean;
+};
+
+type ReviewSyncVariables = {
+  decision: ReviewDecision;
+  fileHash: string;
+  previousDecision: ReviewDecision;
+  rollbackHistory: (history: DecisionAction[]) => DecisionAction[];
+  transactionId: string;
+};
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
-  { value: 'pending', label: 'Pending' },
-  { value: 'all', label: 'All' },
-  { value: 'approved', label: 'Approved' },
-  { value: 'dismissed', label: 'Dismissed' },
-  { value: 'escalated', label: 'Escalated' },
-]
+  { value: "pending", label: "Pending" },
+  { value: "all", label: "All" },
+  { value: "approved", label: "Approved" },
+  { value: "dismissed", label: "Dismissed" },
+  { value: "escalated", label: "Escalated" },
+];
 
 const shortcutOptions = [
-  { keys: 'J / Down', label: 'Next transaction' },
-  { keys: 'K / Up', label: 'Previous transaction' },
-  { keys: 'A', label: 'Approve' },
-  { keys: 'D', label: 'Dismiss' },
-  { keys: 'E', label: 'Escalate' },
-  { keys: 'U', label: 'Undo' },
-]
+  { keys: "J / Down", label: "Next transaction" },
+  { keys: "K / Up", label: "Previous transaction" },
+  { keys: "A", label: "Approve" },
+  { keys: "D", label: "Dismiss" },
+  { keys: "E", label: "Escalate" },
+  { keys: "U", label: "Undo" },
+];
 
 const SEARCH_FIELDS: Array<{
-  key: SearchFieldKey
-  label: string
-  values: (transaction: TransactionFlag) => string[]
+  key: SearchFieldKey;
+  label: string;
+  values: (transaction: TransactionFlag) => string[];
 }> = [
   {
-    key: 'transaction_id',
-    label: 'transaction_id',
+    key: "transaction_id",
+    label: "transaction_id",
     values: (transaction) => [transaction.transactionId],
   },
   {
-    key: 'timestamp',
-    label: 'timestamp',
+    key: "timestamp",
+    label: "timestamp",
     values: (transaction) => {
-      const values = [transaction.timestamp]
-      const date = new Date(transaction.timestamp)
+      const values = [transaction.timestamp];
+      const date = new Date(transaction.timestamp);
       if (!Number.isNaN(date.getTime())) {
-        values.push(date.toISOString().slice(0, 10))
+        values.push(date.toISOString().slice(0, 10));
         values.push(
           date.toLocaleDateString(undefined, {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
           }),
-        )
+        );
       }
 
-      return values
+      return values;
     },
   },
   {
-    key: 'card_id',
-    label: 'card_id',
+    key: "card_id",
+    label: "card_id",
     values: (transaction) => [transaction.cardId],
   },
   {
-    key: 'amount',
-    label: 'amount',
+    key: "amount",
+    label: "amount",
     values: (transaction) => [
       String(transaction.amount),
       transaction.amount.toFixed(2),
@@ -90,46 +108,143 @@ const SEARCH_FIELDS: Array<{
     ],
   },
   {
-    key: 'merchant_name',
-    label: 'merchant_name',
+    key: "merchant_name",
+    label: "merchant_name",
     values: (transaction) => [transaction.merchantName],
   },
   {
-    key: 'merchant_category',
-    label: 'merchant_category',
+    key: "merchant_category",
+    label: "merchant_category",
     values: (transaction) => [transaction.merchantCategory],
   },
   {
-    key: 'channel',
-    label: 'channel',
+    key: "channel",
+    label: "channel",
     values: (transaction) => [transaction.channel],
   },
   {
-    key: 'cardholder_country',
-    label: 'cardholder_country',
+    key: "cardholder_country",
+    label: "cardholder_country",
     values: (transaction) => [transaction.cardholderCountry],
   },
   {
-    key: 'merchant_country',
-    label: 'merchant_country',
+    key: "merchant_country",
+    label: "merchant_country",
     values: (transaction) => [transaction.merchantCountry],
   },
   {
-    key: 'device_id',
-    label: 'device_id',
-    values: (transaction) => [transaction.deviceId ?? ''],
+    key: "device_id",
+    label: "device_id",
+    values: (transaction) => [transaction.deviceId ?? ""],
   },
   {
-    key: 'ip_address',
-    label: 'ip_address',
-    values: (transaction) => [transaction.ipAddress ?? ''],
+    key: "ip_address",
+    label: "ip_address",
+    values: (transaction) => [transaction.ipAddress ?? ""],
   },
-]
+];
 
-const SEARCH_FIELD_MAP = new Map(SEARCH_FIELDS.map((field) => [field.key, field]))
+const SEARCH_FIELD_MAP = new Map(
+  SEARCH_FIELDS.map((field) => [field.key, field]),
+);
+const neutralFalsePositiveCost = 5;
+
+function getEffectiveRiskThreshold(
+  riskThreshold: number,
+  falsePositiveCost: number,
+) {
+  return Math.min(
+    95,
+    Math.max(
+      0,
+      riskThreshold + (falsePositiveCost - neutralFalsePositiveCost) * 5,
+    ),
+  );
+}
+
+function AuditLog({
+  entries,
+  error,
+  isLoading,
+  onClose,
+  onSelectTransaction,
+  reviewableTransactionIds,
+}: {
+  entries: ReviewLogEntry[];
+  error: string | null;
+  isLoading: boolean;
+  onClose: () => void;
+  onSelectTransaction: (transactionId: string) => void;
+  reviewableTransactionIds: Set<string>;
+}) {
+  return (
+    <aside className="audit-log" aria-label="Review audit log">
+      <div className="audit-log-header">
+        <div>
+          <strong>Audit log</strong>
+          <span>
+            {error
+              ? "Could not load"
+              : isLoading
+                ? "Refreshing"
+                : `${entries.length} decisions`}
+          </span>
+        </div>
+        <Button
+          aria-label="Close audit log"
+          onClick={onClose}
+          size="icon"
+          title="Close audit log"
+          variant="ghost"
+        >
+          ×
+        </Button>
+      </div>
+      <div className="audit-log-list">
+        {entries.length === 0 ? (
+          <span className="audit-log-empty">No review decisions yet.</span>
+        ) : (
+          entries.map((entry) => {
+            const canSelect = reviewableTransactionIds.has(entry.transactionId);
+
+            return (
+              <button
+                className="audit-log-row"
+                disabled={!canSelect}
+                key={`${entry.transactionId}-${entry.reviewedAt}`}
+                onClick={() => onSelectTransaction(entry.transactionId)}
+                type="button"
+              >
+                <strong>{entry.action}</strong>
+                <span>{entry.transactionId}</span>
+                <time dateTime={entry.reviewedAt}>
+                  {formatAuditTime(entry.reviewedAt)}
+                </time>
+              </button>
+            );
+          })
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function formatAuditTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export function ReviewQueue({
   activeFileHash,
+  allItems,
   fileHash,
   items,
   onReset,
@@ -137,90 +252,134 @@ export function ReviewQueue({
   sessions,
   useModel,
 }: ReviewQueueProps) {
-  const [transactions, setTransactions] = useState(items)
-  const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
-  const [filter, setFilter] = useState<QueueFilter>('pending')
-  const [query, setQuery] = useState('')
-  const [searchMode, setSearchMode] = useState<SearchMode>('all')
-  const [singleField, setSingleField] = useState<SearchFieldKey>('transaction_id')
+  const queryClient = useQueryClient();
+  const [transactions, setTransactions] = useState(items);
+  const [activeId, setActiveId] = useState(items[0]?.transactionId ?? "");
+  const [filter, setFilter] = useState<QueueFilter>("pending");
+  const [query, setQuery] = useState("");
+  const [riskThreshold, setRiskThreshold] = useState(0);
+  const [falsePositiveCost, setFalsePositiveCost] = useState(
+    neutralFalsePositiveCost,
+  );
+  const [searchMode, setSearchMode] = useState<SearchMode>("all");
+  const [singleField, setSingleField] =
+    useState<SearchFieldKey>("transaction_id");
   const [customFields, setCustomFields] = useState<SearchFieldKey[]>([
-    'transaction_id',
-    'card_id',
-    'merchant_name',
-  ])
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const [history, setHistory] = useState<DecisionAction[]>([])
+    "transaction_id",
+    "card_id",
+    "merchant_name",
+  ]);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [history, setHistory] = useState<DecisionAction[]>([]);
   const [networkFocus, setNetworkFocus] = useState<{
-    label: string
-    transactionIds: Set<string>
-  } | null>(null)
+    label: string;
+    transactionIds: Set<string>;
+  } | null>(null);
   const {
+    error: reviewSyncError,
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
-  } = useMutation({
-    mutationFn: submitReviewDecision,
-  })
+  } = useMutation<unknown, Error, ReviewSyncVariables>({
+    mutationFn: ({
+      previousDecision: _previousDecision,
+      rollbackHistory: _rollbackHistory,
+      ...variables
+    }) => submitReviewDecision(variables),
+    onError: (_error, variables) => {
+      setTransactions((current) =>
+        current.map((transaction) =>
+          transaction.transactionId === variables.transactionId
+            ? { ...transaction, decision: variables.previousDecision }
+            : transaction,
+        ),
+      );
+      setHistory(variables.rollbackHistory);
+      setActiveId(variables.transactionId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["review-log", fileHash] });
+    },
+  });
+  const reviewLogQuery = useQuery({
+    enabled: Boolean(fileHash),
+    queryFn: () => fetchReviewLog(fileHash),
+    queryKey: ["review-log", fileHash],
+  });
+  const effectiveRiskThreshold = useMemo(
+    () => getEffectiveRiskThreshold(riskThreshold, falsePositiveCost),
+    [falsePositiveCost, riskThreshold],
+  );
 
   const searchScopeKeys = useMemo(() => {
-    if (searchMode === 'single') {
-      return [singleField]
+    if (searchMode === "single") {
+      return [singleField];
     }
 
-    if (searchMode === 'custom') {
+    if (searchMode === "custom") {
       return customFields.length > 0
         ? customFields
-        : SEARCH_FIELDS.map((field) => field.key)
+        : SEARCH_FIELDS.map((field) => field.key);
     }
 
-    return SEARCH_FIELDS.map((field) => field.key)
-  }, [customFields, searchMode, singleField])
+    return SEARCH_FIELDS.map((field) => field.key);
+  }, [customFields, searchMode, singleField]);
 
   const visibleEntries = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
+    const normalizedQuery = query.trim().toLowerCase();
 
     return transactions
       .map((transaction) => {
         const filterPasses =
-          filter === 'all' ? true : transaction.decision === filter
+          filter === "all" ? true : transaction.decision === filter;
+        const thresholdPasses =
+          transaction.score * 100 >= effectiveRiskThreshold;
         const networkPasses = networkFocus
           ? networkFocus.transactionIds.has(transaction.transactionId)
-          : true
+          : true;
 
-        let matchedFieldLabels: string[] = []
+        let matchedFieldLabels: string[] = [];
 
         if (normalizedQuery) {
           matchedFieldLabels = searchScopeKeys
             .flatMap((key) => {
-              const field = SEARCH_FIELD_MAP.get(key)
+              const field = SEARCH_FIELD_MAP.get(key);
               if (!field) {
-                return []
+                return [];
               }
 
               const hasMatch = field
                 .values(transaction)
-                .some((value) => value.toLowerCase().includes(normalizedQuery))
+                .some((value) => value.toLowerCase().includes(normalizedQuery));
 
-              return hasMatch ? [field.label] : []
+              return hasMatch ? [field.label] : [];
             })
-            .filter((value, index, array) => array.indexOf(value) === index)
+            .filter((value, index, array) => array.indexOf(value) === index);
         }
 
-        const queryPasses =
-          !normalizedQuery || matchedFieldLabels.length > 0
+        const queryPasses = !normalizedQuery || matchedFieldLabels.length > 0;
 
         return {
           matchedFieldLabels,
           transaction,
-          visible: filterPasses && networkPasses && queryPasses,
-        }
+          visible:
+            filterPasses && thresholdPasses && networkPasses && queryPasses,
+        };
       })
-      .filter((entry) => entry.visible)
-  }, [filter, networkFocus, query, searchScopeKeys, transactions])
+      .filter((entry) => entry.visible);
+  }, [
+    effectiveRiskThreshold,
+    filter,
+    networkFocus,
+    query,
+    searchScopeKeys,
+    transactions,
+  ]);
 
   const visibleTransactions = useMemo(
     () => visibleEntries.map((entry) => entry.transaction),
     [visibleEntries],
-  )
+  );
 
   const matchFieldsByTransactionId = useMemo(
     () =>
@@ -231,133 +390,151 @@ export function ReviewQueue({
         ]),
       ),
     [visibleEntries],
-  )
+  );
 
   const activeTransaction =
-    visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
-    visibleTransactions[0]
+    visibleTransactions.find(
+      (transaction) => transaction.transactionId === activeId,
+    ) ?? visibleTransactions[0];
 
   const reviewableTransactionIds = useMemo(
     () => new Set(transactions.map((transaction) => transaction.transactionId)),
     [transactions],
-  )
+  );
 
   const activeCardAnalysisQuery = useQuery({
     enabled: Boolean(activeTransaction?.cardId),
     queryFn: () =>
       fetchCardAnalysis({
-        cardId: activeTransaction?.cardId ?? '',
+        cardId: activeTransaction?.cardId ?? "",
         fileHash,
         useModel,
       }),
-    queryKey: ['card-analysis', fileHash, activeTransaction?.cardId, useModel],
-  })
+    queryKey: ["card-analysis", fileHash, activeTransaction?.cardId, useModel],
+  });
 
   const queueStats = useMemo(() => {
     return transactions.reduce(
       (stats, transaction) => {
-        stats[transaction.decision] += 1
-        return stats
+        stats[transaction.decision] += 1;
+        return stats;
       },
       { approved: 0, dismissed: 0, escalated: 0, pending: 0 } as Record<
         ReviewDecision,
         number
       >,
-    )
-  }, [transactions])
+    );
+  }, [transactions]);
+  const tunedQueueCount = useMemo(
+    () =>
+      transactions.filter(
+        (transaction) => transaction.score * 100 >= effectiveRiskThreshold,
+      ).length,
+    [effectiveRiskThreshold, transactions],
+  );
 
   useEffect(() => {
-    setTransactions(items)
-    setActiveId(items[0]?.transactionId ?? '')
-    setFilter('pending')
-    setSearchMode('all')
-    setSingleField('transaction_id')
-    setCustomFields(['transaction_id', 'card_id', 'merchant_name'])
-    setNetworkFocus(null)
-    setHistory([])
-  }, [fileHash, items])
+    setTransactions(items);
+    setActiveId(items[0]?.transactionId ?? "");
+    setFilter("pending");
+    setRiskThreshold(0);
+    setFalsePositiveCost(neutralFalsePositiveCost);
+    setSearchMode("all");
+    setSingleField("transaction_id");
+    setCustomFields(["transaction_id", "card_id", "merchant_name"]);
+    setNetworkFocus(null);
+    setHistory([]);
+  }, [fileHash, items]);
 
   const focusRelatedTransactions = useCallback(
-    ({ label, transactionIds }: { label: string; transactionIds: string[] }) => {
+    ({
+      label,
+      transactionIds,
+    }: {
+      label: string;
+      transactionIds: string[];
+    }) => {
       if (transactionIds.length === 0) {
-        return
+        return;
       }
 
-      const ids = new Set(transactionIds)
-      const firstVisible = transactions.find((tx) => ids.has(tx.transactionId))
+      const ids = new Set(transactionIds);
+      const firstVisible = transactions.find((tx) => ids.has(tx.transactionId));
 
-      setFilter('all')
-      setQuery('')
-      setNetworkFocus({ label, transactionIds: ids })
+      setFilter("all");
+      setQuery("");
+      setNetworkFocus({ label, transactionIds: ids });
       if (firstVisible) {
-        setActiveId(firstVisible.transactionId)
+        setActiveId(firstVisible.transactionId);
       }
     },
     [transactions],
-  )
+  );
 
   const filterByTransactionField = useCallback(
     ({ field, value }: { field: SearchFieldKey; value: string }) => {
-      const queryValue = value.trim()
+      const queryValue = value.trim();
 
       if (!queryValue) {
-        return
+        return;
       }
 
       const firstMatch = transactions.find((transaction) => {
-        const searchField = SEARCH_FIELD_MAP.get(field)
-        return searchField?.values(transaction).some((candidate) =>
-          candidate.toLowerCase().includes(queryValue.toLowerCase()),
-        )
-      })
+        const searchField = SEARCH_FIELD_MAP.get(field);
+        return searchField
+          ?.values(transaction)
+          .some((candidate) =>
+            candidate.toLowerCase().includes(queryValue.toLowerCase()),
+          );
+      });
 
-      setFilter('all')
-      setNetworkFocus(null)
-      setSearchMode('single')
-      setSingleField(field)
-      setQuery(queryValue)
+      setFilter("all");
+      setNetworkFocus(null);
+      setSearchMode("single");
+      setSingleField(field);
+      setQuery(queryValue);
 
       if (firstMatch) {
-        setActiveId(firstMatch.transactionId)
+        setActiveId(firstMatch.transactionId);
       }
     },
     [transactions],
-  )
+  );
 
   const toggleCustomField = (key: SearchFieldKey) => {
     setCustomFields((current) =>
       current.includes(key)
         ? current.filter((value) => value !== key)
         : [...current, key],
-    )
-  }
+    );
+  };
 
   const decide = useCallback(
     (
       transactionId: string,
-      nextDecision: Exclude<ReviewDecision, 'pending'>,
+      nextDecision: Exclude<ReviewDecision, "pending">,
     ) => {
       const transaction = transactions.find(
         (item) => item.transactionId === transactionId,
-      )
+      );
 
       if (!transaction) {
-        return
+        return;
       }
 
       const activeIndex = visibleTransactions.findIndex(
         (item) => item.transactionId === transactionId,
-      )
+      );
       const nextActiveTransaction =
         visibleTransactions[activeIndex + 1] ??
         visibleTransactions[activeIndex - 1] ??
-        null
+        null;
       const action: DecisionAction = {
         actedAt: new Date().toISOString(),
         nextDecision,
         previousDecision: transaction.decision,
         transactionId,
-      }
+      };
 
       setTransactions((current) =>
         current.map((item) =>
@@ -365,23 +542,28 @@ export function ReviewQueue({
             ? { ...item, decision: nextDecision }
             : item,
         ),
-      )
-      setHistory((previous) => [action, ...previous])
-      setActiveId(nextActiveTransaction?.transactionId ?? '')
+      );
+      setHistory((previous) => [action, ...previous]);
+      setActiveId(nextActiveTransaction?.transactionId ?? "");
       syncReviewDecision({
         decision: nextDecision,
         fileHash,
+        previousDecision: transaction.decision,
+        rollbackHistory: (current) =>
+          current.filter(
+            (historyAction) => historyAction.actedAt !== action.actedAt,
+          ),
         transactionId,
-      })
+      });
     },
     [fileHash, syncReviewDecision, transactions, visibleTransactions],
-  )
+  );
 
   const undo = useCallback(() => {
-    const [lastAction, ...rest] = history
+    const [lastAction, ...rest] = history;
 
     if (!lastAction) {
-      return
+      return;
     }
 
     setTransactions((current) =>
@@ -390,83 +572,85 @@ export function ReviewQueue({
           ? { ...transaction, decision: lastAction.previousDecision }
           : transaction,
       ),
-    )
-    setHistory(rest)
-    setActiveId(lastAction.transactionId)
+    );
+    setHistory(rest);
+    setActiveId(lastAction.transactionId);
     syncReviewDecision({
       decision: lastAction.previousDecision,
       fileHash,
+      previousDecision: lastAction.nextDecision,
+      rollbackHistory: (current) => [lastAction, ...current],
       transactionId: lastAction.transactionId,
-    })
-  }, [fileHash, history, syncReviewDecision])
+    });
+  }, [fileHash, history, syncReviewDecision]);
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
       if (!activeTransaction) {
-        return
+        return;
       }
 
       const activeIndex = visibleTransactions.findIndex(
         (transaction) =>
           transaction.transactionId === activeTransaction.transactionId,
-      )
+      );
       const nextIndex = Math.min(
         Math.max(activeIndex + direction, 0),
         visibleTransactions.length - 1,
-      )
-      setActiveId(visibleTransactions[nextIndex]?.transactionId ?? '')
+      );
+      setActiveId(visibleTransactions[nextIndex]?.transactionId ?? "");
     },
     [activeTransaction, visibleTransactions],
-  )
+  );
 
   useEffect(() => {
     if (activeTransaction) {
-      setActiveId(activeTransaction.transactionId)
+      setActiveId(activeTransaction.transactionId);
     }
-  }, [activeTransaction])
+  }, [activeTransaction]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
+      const target = event.target as HTMLElement | null;
 
-      if (target?.matches('input, textarea, select, button')) {
-        return
+      if (target?.matches("input, textarea, select, button")) {
+        return;
       }
 
-      if (event.key === 'j' || event.key === 'ArrowDown') {
-        event.preventDefault()
-        moveActive(1)
+      if (event.key === "j" || event.key === "ArrowDown") {
+        event.preventDefault();
+        moveActive(1);
       }
 
-      if (event.key === 'k' || event.key === 'ArrowUp') {
-        event.preventDefault()
-        moveActive(-1)
+      if (event.key === "k" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveActive(-1);
       }
 
       if (!activeTransaction) {
-        return
+        return;
       }
 
-      if (event.key.toLowerCase() === 'a') {
-        decide(activeTransaction.transactionId, 'approved')
+      if (event.key.toLowerCase() === "a") {
+        decide(activeTransaction.transactionId, "approved");
       }
 
-      if (event.key.toLowerCase() === 'd') {
-        decide(activeTransaction.transactionId, 'dismissed')
+      if (event.key.toLowerCase() === "d") {
+        decide(activeTransaction.transactionId, "dismissed");
       }
 
-      if (event.key.toLowerCase() === 'e') {
-        decide(activeTransaction.transactionId, 'escalated')
+      if (event.key.toLowerCase() === "e") {
+        decide(activeTransaction.transactionId, "escalated");
       }
 
-      if (event.key.toLowerCase() === 'u') {
-        undo()
+      if (event.key.toLowerCase() === "u") {
+        undo();
       }
-    }
+    };
 
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTransaction, decide, moveActive, undo])
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTransaction, decide, moveActive, undo]);
 
   return (
     <div className="app-shell review-shell">
@@ -476,10 +660,13 @@ export function ReviewQueue({
             <strong>{queueStats.pending}</strong>
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
+            <span>{tunedQueueCount} tuned</span>
             <span>{transactions.length} in queue</span>
             {networkFocus ? <span>network: {networkFocus.label}</span> : null}
-            {reviewSyncFailed ? <span>Sync failed</span> : null}
-            <span>{useModel ? 'ML model' : 'Rules model'}</span>
+            {reviewSyncFailed ? (
+              <span title={reviewSyncError?.message}>Sync failed</span>
+            ) : null}
+            <span>{useModel ? "ML model" : "Rules model"}</span>
           </div>
           <div className="topbar-actions">
             {sessions.length > 1 ? (
@@ -491,7 +678,8 @@ export function ReviewQueue({
               >
                 {sessions.map((session) => (
                   <option key={session.fileHash} value={session.fileHash}>
-                    {session.label} - {session.useModel ? 'ML' : 'Rules'} - {session.fileHash.slice(0, 8)}
+                    {session.label} - {session.useModel ? "ML" : "Rules"} -{" "}
+                    {session.fileHash.slice(0, 8)}
                   </option>
                 ))}
               </select>
@@ -503,12 +691,17 @@ export function ReviewQueue({
                 placeholder="Search all columns"
                 value={query}
               />
-              <label className="search-control compact" htmlFor="search-mode-select">
+              <label
+                className="search-control compact"
+                htmlFor="search-mode-select"
+              >
                 <span className="visually-hidden">Scope</span>
                 <select
                   className="search-select"
                   id="search-mode-select"
-                  onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+                  onChange={(event) =>
+                    setSearchMode(event.target.value as SearchMode)
+                  }
                   value={searchMode}
                 >
                   <option value="all">All columns</option>
@@ -517,8 +710,11 @@ export function ReviewQueue({
                 </select>
               </label>
 
-              {searchMode === 'single' ? (
-                <label className="search-control compact" htmlFor="single-column-select">
+              {searchMode === "single" ? (
+                <label
+                  className="search-control compact"
+                  htmlFor="single-column-select"
+                >
                   <span className="visually-hidden">Column</span>
                   <select
                     className="search-select"
@@ -570,6 +766,15 @@ export function ReviewQueue({
             >
               ↶
             </Button>
+            <Button
+              aria-expanded={auditOpen}
+              aria-label="Toggle audit log"
+              onClick={() => setAuditOpen((open) => !open)}
+              size="sm"
+              variant="outline"
+            >
+              Audit Log
+            </Button>
             {networkFocus ? (
               <Button
                 onClick={() => setNetworkFocus(null)}
@@ -593,27 +798,71 @@ export function ReviewQueue({
             value={filter}
           />
 
-          {searchMode === 'custom' ? (
-            <div className="search-custom-fields" aria-label="Custom search columns">
+          <div className="tuning-controls" aria-label="Queue tuning controls">
+            <label className="tuning-control">
+              <span>Risk threshold</span>
+              <Slider
+                aria-label="Risk threshold"
+                max={95}
+                min={0}
+                onChange={(event) =>
+                  setRiskThreshold(Number(event.target.value))
+                }
+                step={5}
+                value={riskThreshold}
+              />
+              <strong>{Math.round(effectiveRiskThreshold)}%</strong>
+            </label>
+            <label className="tuning-control">
+              <span>False positive cost</span>
+              <Slider
+                aria-label="False positive cost"
+                max={9}
+                min={1}
+                onChange={(event) =>
+                  setFalsePositiveCost(Number(event.target.value))
+                }
+                step={1}
+                value={falsePositiveCost}
+              />
+              <strong>{falsePositiveCost}</strong>
+            </label>
+          </div>
+
+          {searchMode === "custom" ? (
+            <div
+              className="search-custom-fields"
+              aria-label="Custom search columns"
+            >
               {SEARCH_FIELDS.map((field) => {
-                const selected = customFields.includes(field.key)
+                const selected = customFields.includes(field.key);
 
                 return (
                   <button
-                    className={selected ? 'search-chip search-chip-active' : 'search-chip'}
+                    className={
+                      selected
+                        ? "search-chip search-chip-active"
+                        : "search-chip"
+                    }
                     key={field.key}
                     onClick={() => toggleCustomField(field.key)}
                     type="button"
                   >
                     {field.label}
                   </button>
-                )
+                );
               })}
             </div>
           ) : null}
         </div>
 
-        <div className="review-layout">
+        <div
+          className={
+            auditOpen
+              ? "review-layout review-layout-with-audit"
+              : "review-layout"
+          }
+        >
           <QueueList
             activeTransactionId={activeTransaction?.transactionId}
             matchFieldsByTransactionId={matchFieldsByTransactionId}
@@ -636,14 +885,29 @@ export function ReviewQueue({
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
-              transactions={transactions}
+              transactions={allItems}
               transaction={activeTransaction}
             />
           ) : (
             <EmptyTransactionDetail />
           )}
+
+          {auditOpen ? (
+            <AuditLog
+              entries={reviewLogQuery.data ?? []}
+              error={
+                reviewLogQuery.error instanceof Error
+                  ? reviewLogQuery.error.message
+                  : null
+              }
+              isLoading={reviewLogQuery.isFetching}
+              onClose={() => setAuditOpen(false)}
+              onSelectTransaction={setActiveId}
+              reviewableTransactionIds={reviewableTransactionIds}
+            />
+          ) : null}
         </div>
       </main>
     </div>
-  )
+  );
 }
