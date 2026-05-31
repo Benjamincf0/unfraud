@@ -44,6 +44,15 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
   { value: 'escalated', label: 'Escalated' },
 ]
 
+const shortcutOptions = [
+  { keys: 'J / Down', label: 'Next transaction' },
+  { keys: 'K / Up', label: 'Previous transaction' },
+  { keys: 'A', label: 'Approve' },
+  { keys: 'D', label: 'Dismiss' },
+  { keys: 'E', label: 'Escalate' },
+  { keys: 'U', label: 'Undo' },
+]
+
 const SEARCH_FIELDS: Array<{
   key: SearchFieldKey
   label: string
@@ -147,6 +156,7 @@ export function ReviewQueue({
     'card_id',
     'merchant_name',
   ])
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [history, setHistory] = useState<DecisionAction[]>([])
   const [networkFocus, setNetworkFocus] = useState<{
     label: string
@@ -505,6 +515,27 @@ export function ReviewQueue({
                     ))}
                   </select>
                 </label>
+              ) : null}
+            </div>
+            <div className="shortcut-menu-wrap">
+              <Button
+                aria-expanded={shortcutsOpen}
+                aria-haspopup="true"
+                onClick={() => setShortcutsOpen((open) => !open)}
+                size="sm"
+                variant="outline"
+              >
+                Shortcuts
+              </Button>
+              {shortcutsOpen ? (
+                <div className="shortcut-menu" role="menu">
+                  {shortcutOptions.map((shortcut) => (
+                    <div className="shortcut-menu-row" key={shortcut.label}>
+                      <kbd>{shortcut.keys}</kbd>
+                      <span>{shortcut.label}</span>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
             <Button
