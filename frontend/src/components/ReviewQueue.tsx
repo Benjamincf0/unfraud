@@ -93,31 +93,15 @@ function addFlaggedTransactionId(
   return next;
 }
 
-function addQueueTransactionId(
-  current: Set<string>,
-  transactionId: string,
-): Set<string> {
-  if (current.has(transactionId)) {
-    return current;
+function countLoadedTransactions(
+  heuristicById: Map<string, TransactionFlag>,
+  modelById: Map<string, TransactionFlag>,
+) {
+  const ids = new Set(heuristicById.keys());
+  for (const transactionId of modelById.keys()) {
+    ids.add(transactionId);
   }
-
-  const next = new Set(current);
-  next.add(transactionId);
-  return next;
-}
-
-function queueTransactionIds(items: TransactionFlag[]) {
-  return items.map((transaction) => transaction.transactionId);
-}
-
-function addQueueTransactionIds(
-  current: Set<string>,
-  transactionIds: string[],
-): Set<string> {
-  return transactionIds.reduce(
-    (next, transactionId) => addQueueTransactionId(next, transactionId),
-    current,
-  );
+  return ids.size;
 }
 
 type SearchMode = "all" | "single" | "custom";
@@ -357,7 +341,6 @@ export function ReviewQueue({
     () => new Set<string>(),
   );
   const [loadedModelIds, setLoadedModelIds] = useState(() => new Set<string>());
-  const [loadedQueueIds, setLoadedQueueIds] = useState(() => new Set<string>());
   const [activeId, setActiveId] = useState("");
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
@@ -450,7 +433,6 @@ export function ReviewQueue({
     setRelatedById(new Map());
     setLoadedHeuristicIds(new Set());
     setLoadedModelIds(new Set());
-    setLoadedQueueIds(new Set());
     setEnrichedTransactionIds(new Set());
     setEnrichmentFailedIds(new Set());
     setEnrichingTransactionId(null);
@@ -484,9 +466,6 @@ export function ReviewQueue({
     const bootstrapModelIds = flaggedTransactionIds(bootstrapQuery.data.model);
     setLoadedHeuristicIds(new Set(bootstrapHeuristicIds));
     setLoadedModelIds(new Set(bootstrapModelIds));
-    setLoadedQueueIds(
-      new Set([...bootstrapHeuristicIds, ...bootstrapModelIds]),
-    );
     setActiveId((current) => {
       if (current) {
         return current;
@@ -588,10 +567,6 @@ export function ReviewQueue({
             return next;
           });
         }
-
-        setLoadedQueueIds((current) =>
-          addQueueTransactionId(current, transactionId),
-        );
 
         enrichedTransactionIdsRef.current.add(transactionId);
         setEnrichedTransactionIds(
@@ -750,7 +725,10 @@ export function ReviewQueue({
 
   const loadedHeuristicCount = loadedHeuristicIds.size;
   const loadedModelCount = loadedModelIds.size;
-  const loadedFlaggedCount = loadedQueueIds.size;
+  const loadedTransactionCount = useMemo(
+    () => countLoadedTransactions(heuristicById, modelById),
+    [heuristicById, modelById],
+  );
 
   const heuristicIndex = useMemo(
     () => buildTransactionIndex(Array.from(heuristicById.values())),
@@ -937,15 +915,15 @@ export function ReviewQueue({
   const hasMoreFlagged = loadedScorerCount < activeFlaggedCount;
 
   const statusContextLine = useMemo(() => {
+    if (loadedTransactionCount > 0) {
+      return `Loaded ${loadedTransactionCount.toLocaleString()} transactions`;
+    }
+
     const filtersActive =
       filter !== "pending" ||
       query.trim() !== "" ||
       networkFocus !== null ||
       effectiveRiskThreshold > 0;
-
-    if (loadedFlaggedCount < activeFlaggedCount) {
-      return `Loaded ${loadedFlaggedCount.toLocaleString()} of ${activeFlaggedCount.toLocaleString()} flagged (${scorerLabel.toLowerCase()})`;
-    }
 
     if (filtersActive && visibleTransactions.length !== transactions.length) {
       return `Showing ${visibleTransactions.length.toLocaleString()} of ${transactions.length.toLocaleString()} loaded flagged (filters active)`;
@@ -965,16 +943,14 @@ export function ReviewQueue({
 
     return null;
   }, [
-    activeFlaggedCount,
     effectiveRiskThreshold,
     filter,
-    loadedFlaggedCount,
+    loadedTransactionCount,
     networkFocus,
     notQueuedCount,
     activeQueueStats,
     query,
     reviewedCount,
-    scorerLabel,
     transactions.length,
     visibleTransactions.length,
   ]);
@@ -1014,9 +990,6 @@ export function ReviewQueue({
         setLoadedHeuristicIds((current) =>
           addFlaggedTransactionIds(current, heuristicPage.items),
         );
-        setLoadedQueueIds((current) =>
-          addQueueTransactionIds(current, queueTransactionIds(heuristicPage.items)),
-        );
         prefetchIds = heuristicPage.items.map(
           (transaction) => transaction.transactionId,
         );
@@ -1033,9 +1006,6 @@ export function ReviewQueue({
         );
         setLoadedModelIds((current) =>
           addFlaggedTransactionIds(current, modelPage.items),
-        );
-        setLoadedQueueIds((current) =>
-          addQueueTransactionIds(current, queueTransactionIds(modelPage.items)),
         );
 
         if (prefetchIds.length === 0) {
@@ -1075,7 +1045,6 @@ export function ReviewQueue({
     isLoadingMore,
     loadedHeuristicIds,
     loadedModelIds,
-    loadedQueueIds,
     summary.flaggedCount,
     summary.mlModelAvailable,
     summary.modelFlaggedCount,
