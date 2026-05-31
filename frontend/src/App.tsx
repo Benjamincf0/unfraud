@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
@@ -9,7 +9,6 @@ import {
 } from './api/review'
 import {
   clearActiveReviewSession,
-  loadActiveReviewSession,
   loadReviewSessions,
   saveActiveReviewSession,
   saveReviewSession,
@@ -18,10 +17,8 @@ import {
 function App() {
   const [session, setSession] = useState<ReviewSessionData | null>(null)
   const [sessions, setSessions] = useState(loadReviewSessions)
-  const [activeFileHash, setActiveFileHash] = useState(
-    loadActiveReviewSession,
-  )
-  const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
+  const [activeFileHash, setActiveFileHash] = useState<string | null>(null)
+  const [isUploadMode, setIsUploadMode] = useState(true)
   const sessionQuery = useQuery({
     enabled:
       !isUploadMode &&
@@ -67,12 +64,6 @@ function App() {
     setActiveFileHash(null)
     setIsUploadMode(true)
   }, [])
-
-  useEffect(() => {
-    if (!isUploadMode && !activeFileHash && sessions.length > 0) {
-      selectSession(sessions[0].fileHash)
-    }
-  }, [activeFileHash, isUploadMode, selectSession, sessions])
 
   if (!activeSession) {
     return (
