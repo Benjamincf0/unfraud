@@ -80,6 +80,7 @@ class ReviewLogEntry(BaseModel):
 class AnalysisSummaryResponse(BaseModel):
     total_transactions: int
     flagged_count: int
+    model_flagged_count: int = 0
     ml_model_available: bool
 
 
@@ -407,10 +408,17 @@ async def get_analysis_summary(file_hash: str):
     flagged_count = int(
         (analyzed_df["is_fraud"] | (analyzed_df["fraud_score"] > 0)).sum()
     )
+    model_flagged_count = 0
+    if is_model_available():
+        model_df = _analysis_with_review_columns(file_hash, use_model=True)
+        model_flagged_count = int(
+            (model_df["is_fraud"] | (model_df["fraud_score"] > 0)).sum()
+        )
 
     return AnalysisSummaryResponse(
         total_transactions=len(uploaded_files[file_hash]),
         flagged_count=flagged_count,
+        model_flagged_count=model_flagged_count,
         ml_model_available=is_model_available(),
     )
 

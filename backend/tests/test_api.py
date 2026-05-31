@@ -138,6 +138,7 @@ tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,
     summary = response.json()
     assert summary["total_transactions"] == 6
     assert summary["flagged_count"] >= 1
+    assert "model_flagged_count" in summary
     assert "ml_model_available" in summary
 
     response = client.get(f"/analysis/queue/{file_hash}?limit=2")

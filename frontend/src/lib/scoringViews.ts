@@ -5,6 +5,7 @@ export type RiskSortMode = 'active' | 'heuristic' | 'model'
 export type ReviewSummary = {
   totalTransactions: number
   flaggedCount: number
+  modelFlaggedCount: number
   mlModelAvailable: boolean
 }
 

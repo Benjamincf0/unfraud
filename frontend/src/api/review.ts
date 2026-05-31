@@ -21,6 +21,7 @@ type BackendUploadResponse = {
 type BackendSummaryResponse = {
   total_transactions: number
   flagged_count: number
+  model_flagged_count?: number
   ml_model_available: boolean
 }
 
@@ -184,6 +185,7 @@ export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummar
   return {
     totalTransactions: payload.total_transactions,
     flaggedCount: payload.flagged_count,
+    modelFlaggedCount: payload.model_flagged_count ?? 0,
     mlModelAvailable: payload.ml_model_available,
   }
 }

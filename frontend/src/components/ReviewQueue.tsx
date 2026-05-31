@@ -27,7 +27,7 @@ import {
   submitReviewDecision,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
-import { applyModelScores, mergeTransactionMaps } from "../lib/reviewMemory";
+import { mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
   defaultRiskTuning,
@@ -49,6 +49,14 @@ import type {
 } from "../types";
 
 type QueueFilter = "pending" | "all" | "approved" | "dismissed" | "escalated";
+
+function flaggedTransactionsFrom(
+  byId: Map<string, TransactionFlag>,
+): TransactionFlag[] {
+  return Array.from(byId.values()).filter(
+    (transaction) => transaction.isFraud || transaction.score > 0,
+  );
+}
 
 type SearchMode = "all" | "single" | "custom";
 
@@ -278,7 +286,8 @@ export function ReviewQueue({
   const [relatedById, setRelatedById] = useState(
     () => new Map<string, TransactionFlag[]>(),
   );
-  const [loadedQueueCount, setLoadedQueueCount] = useState(0);
+  const [loadedHeuristicCount, setLoadedHeuristicCount] = useState(0);
+  const [loadedModelCount, setLoadedModelCount] = useState(0);
   const [activeId, setActiveId] = useState("");
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
@@ -347,7 +356,7 @@ export function ReviewQueue({
 
   const updateDecision = useCallback(
     (transactionId: string, decision: ReviewDecision) => {
-      setHeuristicById((current) => {
+      const applyDecision = (current: Map<string, TransactionFlag>) => {
         const transaction = current.get(transactionId);
         if (!transaction) {
           return current;
@@ -356,7 +365,10 @@ export function ReviewQueue({
         const next = new Map(current);
         next.set(transactionId, { ...transaction, decision });
         return next;
-      });
+      };
+
+      setHeuristicById(applyDecision);
+      setModelById(applyDecision);
     },
     [],
   );
@@ -365,7 +377,8 @@ export function ReviewQueue({
     setHeuristicById(new Map());
     setModelById(new Map());
     setRelatedById(new Map());
-    setLoadedQueueCount(0);
+    setLoadedHeuristicCount(0);
+    setLoadedModelCount(0);
     setEnrichedTransactionIds(new Set());
     setEnrichmentFailedIds(new Set());
     setEnrichingTransactionId(null);
@@ -393,10 +406,19 @@ export function ReviewQueue({
     setModelById((current) =>
       mergeTransactionMaps(current, bootstrapQuery.data.model),
     );
-    setLoadedQueueCount(bootstrapQuery.data.heuristic.length);
-    setActiveId((current) =>
-      current || bootstrapQuery.data.heuristic[0]?.transactionId || "",
-    );
+    setLoadedHeuristicCount(bootstrapQuery.data.heuristic.length);
+    setLoadedModelCount(bootstrapQuery.data.model.length);
+    setActiveId((current) => {
+      if (current) {
+        return current;
+      }
+
+      return (
+        bootstrapQuery.data.heuristic[0]?.transactionId ||
+        bootstrapQuery.data.model[0]?.transactionId ||
+        ""
+      );
+    });
   }, [bootstrapQuery.data]);
 
   const enrichTransactionDetail = useCallback(
@@ -638,23 +660,17 @@ export function ReviewQueue({
     };
   }, [activeId, enrichTransactionDetail, loadRelatedForTransaction]);
 
-  const flaggedTransactions = useMemo(
-    () =>
-      Array.from(heuristicById.values()).filter(
-        (transaction) => transaction.isFraud || transaction.score > 0,
-      ),
-    [heuristicById],
-  );
+  const activeFlaggedCount = useModel
+    ? summary.modelFlaggedCount
+    : summary.flaggedCount;
+  const loadedFlaggedCount = useModel
+    ? loadedModelCount
+    : loadedHeuristicCount;
 
   const transactions = useMemo(
     () =>
-      flaggedTransactions.map((transaction) => {
-        const modelTransaction = modelById.get(transaction.transactionId);
-        return useModel && modelTransaction
-          ? applyModelScores(transaction, modelTransaction)
-          : transaction;
-      }),
-    [flaggedTransactions, modelById, useModel],
+      flaggedTransactionsFrom(useModel ? modelById : heuristicById),
+    [heuristicById, modelById, useModel],
   );
 
   const heuristicIndex = useMemo(
@@ -842,11 +858,11 @@ export function ReviewQueue({
   );
 
   const totalScoredCount = summary.totalTransactions;
-  const queuedCount = summary.flaggedCount;
+  const queuedCount = activeFlaggedCount;
   const notQueuedCount = Math.max(0, totalScoredCount - queuedCount);
   const reviewedCount = transactions.length - queueStats.pending;
   const scorerLabel = useModel ? "ML model" : "Heuristic";
-  const hasMoreFlagged = loadedQueueCount < summary.flaggedCount;
+  const hasMoreFlagged = loadedFlaggedCount < activeFlaggedCount;
 
   const statusContextLine = useMemo(() => {
     const filtersActive =
@@ -855,8 +871,8 @@ export function ReviewQueue({
       networkFocus !== null ||
       effectiveRiskThreshold > 0;
 
-    if (loadedQueueCount < summary.flaggedCount) {
-      return `Loaded ${loadedQueueCount.toLocaleString()} of ${summary.flaggedCount.toLocaleString()} flagged`;
+    if (loadedFlaggedCount < activeFlaggedCount) {
+      return `Loaded ${loadedFlaggedCount.toLocaleString()} of ${activeFlaggedCount.toLocaleString()} flagged (${scorerLabel.toLowerCase()})`;
     }
 
     if (filtersActive && visibleTransactions.length !== transactions.length) {
@@ -873,15 +889,16 @@ export function ReviewQueue({
 
     return null;
   }, [
+    activeFlaggedCount,
     effectiveRiskThreshold,
     filter,
-    loadedQueueCount,
+    loadedFlaggedCount,
     networkFocus,
     notQueuedCount,
     queueStats.pending,
     query,
     reviewedCount,
-    summary.flaggedCount,
+    scorerLabel,
     transactions.length,
     visibleTransactions.length,
   ]);
@@ -895,42 +912,58 @@ export function ReviewQueue({
   };
 
   const loadMoreFlagged = useCallback(async () => {
-    if (isLoadingMore || loadedQueueCount >= summary.flaggedCount) {
+    const canLoadHeuristic = loadedHeuristicCount < summary.flaggedCount;
+    const canLoadModel =
+      summary.mlModelAvailable &&
+      loadedModelCount < summary.modelFlaggedCount;
+
+    if (isLoadingMore || (!canLoadHeuristic && !canLoadModel)) {
       return;
     }
 
     setIsLoadingMore(true);
 
     try {
-      const heuristicPage = await fetchReviewQueuePage(fileHash, {
-        limit: QUEUE_PAGE_SIZE,
-        offset: loadedQueueCount,
-        useModel: false,
-      });
-      setHeuristicById((current) =>
-        mergeTransactionMaps(current, heuristicPage.items),
-      );
+      let prefetchIds: string[] = [];
 
-      if (summary.mlModelAvailable) {
+      if (canLoadHeuristic) {
+        const heuristicPage = await fetchReviewQueuePage(fileHash, {
+          limit: QUEUE_PAGE_SIZE,
+          offset: loadedHeuristicCount,
+          useModel: false,
+        });
+        setHeuristicById((current) =>
+          mergeTransactionMaps(current, heuristicPage.items),
+        );
+        setLoadedHeuristicCount(
+          (current) => current + heuristicPage.items.length,
+        );
+        prefetchIds = heuristicPage.items.map(
+          (transaction) => transaction.transactionId,
+        );
+      }
+
+      if (canLoadModel) {
         const modelPage = await fetchReviewQueuePage(fileHash, {
           limit: QUEUE_PAGE_SIZE,
-          offset: loadedQueueCount,
+          offset: loadedModelCount,
           useModel: true,
         });
         setModelById((current) =>
           mergeTransactionMaps(current, modelPage.items),
         );
-      }
+        setLoadedModelCount((current) => current + modelPage.items.length);
 
-      setLoadedQueueCount(
-        (current) => current + heuristicPage.items.length,
-      );
+        if (prefetchIds.length === 0) {
+          prefetchIds = modelPage.items.map(
+            (transaction) => transaction.transactionId,
+          );
+        }
+      }
 
       void (async () => {
         let nextIndex = 0;
-        const transactionIds = heuristicPage.items.map(
-          (transaction) => transaction.transactionId,
-        );
+        const transactionIds = prefetchIds;
 
         async function worker() {
           while (nextIndex < transactionIds.length) {
@@ -956,9 +989,11 @@ export function ReviewQueue({
     enrichTransactionDetail,
     fileHash,
     isLoadingMore,
-    loadedQueueCount,
+    loadedHeuristicCount,
+    loadedModelCount,
     summary.flaggedCount,
     summary.mlModelAvailable,
+    summary.modelFlaggedCount,
   ]);
 
   useEffect(() => {
