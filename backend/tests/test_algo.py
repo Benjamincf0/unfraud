@@ -227,6 +227,46 @@ def test_rule_guardrails_trigger_on_anomaly():
     assert "amount" in codes or "cards on this IP" in codes or "geo hop" in codes
 
 
+def test_rule_geo_skips_benign_cross_border_hop():
+    """Cross-border + country hop without corroboration should not auto-flag."""
+    rows = [
+        {
+            "transaction_id": "tx_a",
+            "timestamp": "2026-04-25T10:00:00",
+            "card_id": "card_001",
+            "amount": 20.0,
+            "merchant_name": "Tim Hortons",
+            "merchant_category": "restaurant",
+            "channel": "in_person",
+            "cardholder_country": "US",
+            "merchant_country": "CA",
+            "device_id": pd.NA,
+            "ip_address": pd.NA,
+        },
+        {
+            "transaction_id": "tx_b",
+            "timestamp": "2026-04-25T11:00:00",
+            "card_id": "card_001",
+            "amount": 22.0,
+            "merchant_name": "Chipotle",
+            "merchant_category": "restaurant",
+            "channel": "in_person",
+            "cardholder_country": "US",
+            "merchant_country": "US",
+            "device_id": pd.NA,
+            "ip_address": pd.NA,
+        },
+    ]
+    rows[0]["timestamp"] = pd.Timestamp(rows[0]["timestamp"])
+    rows[1]["timestamp"] = pd.Timestamp(rows[1]["timestamp"])
+    frame = pd.DataFrame(rows)
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+    g = apply_rule_guardrails(build_features(shrink(frame)))
+    benign = g[g["transaction_id"] == "tx_b"].iloc[0]
+    assert not benign["rule_geo"]
+    assert not benign["rule_alert"]
+
+
 def test_format_alert_reason():
     text = format_alert_reason(
         ["Amount anomaly"],

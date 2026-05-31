@@ -21,14 +21,15 @@ Production ML scoring is intentionally **not** model-only.
 ```mermaid
 flowchart TD
   T[Transaction row] --> F[Build features from history]
-  F --> R[Six rule guardrails]
-  F --> M[LightGBM probability]
-  R --> C[Combined score]
+  F --> S[Soft rules rule_guardrail]
+  F --> A[Alert rules rule_alert]
+  F --> M[LightGBM model_score]
+  S --> C[fraud_score = model + 0.35 if soft]
   M --> C
-  R --> FLAG{Flag?}
-  M --> FLAG
-  FLAG -->|model ≥ threshold OR any rule| A[Alert + explanations]
-  A --> SHAP[SHAP reason codes on alerts]
+  M --> Q{Review queue is_fraud?}
+  A --> Q
+  Q -->|model ≥ threshold OR rule_alert| R[Flagged row]
+  R --> SHAP[SHAP + rule reason codes]
 ```
 
 ### Model probability
@@ -44,20 +45,98 @@ If **any** of six guardrails fires, the combined score gets up to **+0.35** (cap
 Alert if:
 
 - Model probability ≥ **threshold** (saved in the model file, chosen during training), **OR**
-- Any guardrail is true.
+- A **high-confidence guardrail** fires (`rule_alert` — strict amount, velocity, geo, cross-card burst).
+
+Softer guardrail hits still add up to **+0.35** to the combined score (`rule_guardrail`) so borderline model scores can surface, without every soft signal auto-queuing a review (which was over-flagging ~30% on the challenge CSV).
 
 ## The six guardrails (plain English)
 
-| Rule | Fires when |
-|------|------------|
-| **Amount** | Spend is far above this card’s norm (≥ 3σ) or above this **category** norm (≥ 3.5σ) |
-| **Velocity** | Many transactions in 5 minutes (≥ 4) or 1 hour (≥ 8) on the same card |
-| **Geo** | Cross-border payment **and** country changed vs previous transaction or fast hop (< 1 hour) |
-| **Off-hours** | Unusual hour for this card **and** elevated amount |
-| **Device / IP** | Same device or IP seen on ≥ 3 different cards in 24 hours |
-| **Merchant burst** | Same merchant has ≥ 4 transactions in 30 minutes across ≥ 3 cards in 2 hours |
+Each family has a **soft** bar (`rule_guardrail`, bumps `fraud_score`) and a **stricter alert** bar (`rule_alert`, can queue without a high model score). See [Guardrail design & limitations](#guardrail-design--limitations) for why there are two tiers and where thresholds come from.
+
+| Rule | Soft (`rule_guardrail`) | Alert (`rule_alert`) |
+|------|-------------------------|----------------------|
+| **Amount** | z vs card ≥ 3.0 or z vs category ≥ 3.5 | z vs card ≥ 4.5 or z vs category ≥ 5.0 |
+| **Velocity** | ≥ 4 tx / 5 min or ≥ 8 / 1 h | ≥ 5 / 5 min or ≥ 10 / 1 h (and soft velocity already true) |
+| **Geo** | Cross-border **and** fast country hop (< 1 h) **and** corroboration | Same, **and** z vs card ≥ 3.0 |
+| **Off-hours** | Hour never seen for card **and** elevated amount | *(no separate alert — use amount/velocity alerts)* |
+| **Device / IP** | ≥ 3 distinct cards on device/IP in 24 h | IP fanout ≥ 4 |
+| **Merchant burst** | ≥ 4 tx / 30 min at merchant **and** ≥ 3 cards / 2 h | ≥ 7 distinct cards / 2 h at merchant |
 
 Guardrails catch **known attack shapes** even when the ML model is uncertain on new fraud types.
+
+## Guardrail design & limitations
+
+This section documents how the two-tier system works, where numeric cutoffs come from, and what is safe to claim when scoring unlabeled files like `transactions.csv`.
+
+### Three outputs per row
+
+| Output | Column | Meaning |
+|--------|--------|---------|
+| Model belief | `model_score` | LightGBM fraud probability (0–1) |
+| Display / ranking score | `fraud_score` | `model_score` plus up to **+0.35** if any **soft** rule fired (capped at 1.0) |
+| Review queue | `is_fraud` | Row appears in the analyst queue |
+
+Queue admission today:
+
+```text
+is_fraud = (model_score ≥ threshold)  OR  rule_alert
+```
+
+Soft rules **do not** auto-queue by themselves. They increase `fraud_score` so the UI can rank “unusual but not extreme” rows; only the model or an **alert** rule adds them to the queue.
+
+That mirrors the heuristic scorer: a **weighted score** built from many weak signals, plus a small set of **high-confidence overrides** (`high_confidence_rule` in `fraud_scorer.py`).
+
+### Why two tiers exist
+
+An earlier hybrid rule was `is_fraud = (model ≥ threshold) OR (any soft rule)`. On the challenge CSV (~1,000 rows, no labels) that queued **~31%** of rows. Most were not “model thinks fraud”; they were **routine anomalies** (especially cross-border spend plus a merchant-country change vs the card’s previous transaction).
+
+The fix is architectural, not cosmetic:
+
+1. **Soft tier** — statistically unusual or mildly suspicious (3σ spend, shared IP on 3 cards, etc.). Appropriate for **score boost**, not automatic escalation.
+2. **Alert tier** — patterns aligned with **known attack shapes** and the heuristic’s high-confidence overrides (extreme amount tails, IP fanout ≥ 4, merchant burst ≥ 7 cards, etc.). Appropriate for **queue without relying on the model**.
+
+### Where the numbers come from
+
+| Constant | Value | Origin |
+|----------|-------|--------|
+| **Model threshold** | ~0.19 (in `fraud_model.pkl`) | Validation split on **labeled** `fraudTrain_part1.csv`; minimizes expected cost with missed fraud = **50**, false alarm = **10** (`DEFAULT_COST_FN` / `DEFAULT_COST_FP` in `algo/algo.py`). **Not** tuned to hit ~7% on the challenge CSV. |
+| **Rule boost** | +0.35 | Same order of magnitude as heuristic geo weight (`foreign_country × corroborated × 0.35`). Chosen so a soft hit plus a borderline model (~0.20) lands near the heuristic queue cutoff (~0.55). |
+| **Soft amount** | 3.0σ / 3.5σ | Standard outlier cutoffs; used in docs and industry playbooks. Many legit rows still exceed 3σ because spend is heavy-tailed and tests are repeated across cards. |
+| **Alert amount** | 4.5σ / 5.0σ | Stricter tail — “extreme” spend vs card/category. Same *family* as heuristic `amount_ratio ≥ 7` (different feature scale). |
+| **Soft velocity** | 4 / 5 min, 8 / 1 h | Operational defaults for card-testing bursts. |
+| **Alert velocity** | 5 / 5 min, 10 / 1 h | Stricter subset of soft velocity. |
+| **Soft device/IP** | ≥ 3 cards / 24 h | “More than a household” on one instrument — worth scoring. |
+| **Alert IP / merchant** | ≥ 4 cards, ≥ 7 cards / 2 h | Matches heuristic `high_confidence_rule` (IP fanout ≥ 4, merchant unique cards ≥ 7). |
+| **Geo corroboration** | z ≥ 2.0 / 2.5 or novel device/IP/category | Copied from heuristic `corroborated` — cross-border **alone** must not queue. |
+
+Implementation: `apply_rule_guardrails()` in `algo/algo.py`; serving: `ml_fraud_scorer._model_decisions()`.
+
+### What is principled vs what was tuned on an unlabeled file
+
+**Principled (design / labeled training):**
+
+- Separating **score bump** from **auto-queue** so queue size reflects escalation policy, not “any anomaly.”
+- Geo requires **cross-border + fast hop + corroboration**, not “US card at a Canadian merchant” on its own.
+- Alert families mirror heuristic **high-confidence** patterns (extreme amount, cross-card IP, merchant fanout).
+- Model threshold from **labeled** validation economics.
+
+**Empirical (challenge CSV, no labels):**
+
+- Exact alert cutoffs (e.g. 4.5σ vs 4.0σ, velocity 5 vs 4) were tightened so `rule_alert` fires on the order of **tens** of rows on `transactions.csv`, not hundreds — while keeping the same pattern families.
+
+**Do not infer detection quality from queue rate:**
+
+- ~7% of the challenge file is **hidden true fraud** (~70 rows).
+- ~6% **flagged** by ML hybrid (~63 rows) after the two-tier fix is **not** proof those rows are fraud.
+- Similar flag counts between heuristic (~61) and ML hybrid (~63) only means both engines were tuned for a **focused queue**, not that either matches the answer key.
+
+Proper evaluation requires **labeled** holdout data (training test split or production outcomes): precision, recall, F1, and cost at the chosen threshold. Use `make score-ml` for operational counts; use training evaluation in [06-training-and-tuning.md](06-training-and-tuning.md) for quality.
+
+### Limitations and next steps
+
+- **Soft rules no longer gate the queue** — only `model_score` and `rule_alert` do. The +0.35 boost does not currently re-open the queue via a combined-score cutoff (e.g. `fraud_score ≥ 0.55`). Adding that would let borderline model scores surface when a soft rule fires, without returning to `OR any soft rule`.
+- **Alert thresholds should be re-tuned on labeled validation**, not on `transactions.csv`, before claiming production-ready precision/recall.
+- **Retrain or recalibrate** when fraud patterns or economics (`cost_fn` / `cost_fp`) change; drift monitoring is described under [Drift monitoring](#drift-monitoring-operations-concept) below.
 
 ## Features the model sees
 

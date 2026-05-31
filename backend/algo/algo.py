@@ -271,6 +271,38 @@ def add_card_category_diversity(df):
     return g
 
 
+def add_card_identity_features(df):
+    """Novel device/IP/category/country for this card (aligned with fraud_scorer.py)."""
+    g = df.sort_values("timestamp").reset_index(drop=True).copy()
+    grp = g.groupby("card_id", sort=False)
+    g["card_tx_index"] = grp.cumcount()
+
+    category_seen_before = g.groupby(["card_id", "merchant_category"], sort=False).cumcount()
+    device_seen_before = g.groupby(["card_id", "device_id"], sort=False).cumcount()
+    ip_seen_before = g.groupby(["card_id", "ip_address"], sort=False).cumcount()
+    country_seen_before = g.groupby(["card_id", "merchant_country"], sort=False).cumcount()
+
+    g["novel_category"] = (
+        (g["card_tx_index"] >= 3) & (category_seen_before == 0)
+    ).astype(int)
+    g["novel_device"] = (
+        (g["channel"] == "online")
+        & (g["card_tx_index"] >= 3)
+        & g["device_id"].notna()
+        & (device_seen_before == 0)
+    ).astype(int)
+    g["novel_ip"] = (
+        (g["channel"] == "online")
+        & (g["card_tx_index"] >= 3)
+        & g["ip_address"].notna()
+        & (ip_seen_before == 0)
+    ).astype(int)
+    g["novel_country"] = (
+        (g["card_tx_index"] >= 4) & (country_seen_before == 0)
+    ).astype(int)
+    return g
+
+
 def add_card_hour_pattern_features(df, min_history: int = 3):
     """Hour rarity vs the card's own prior transaction pattern."""
     g = df.sort_values("timestamp").reset_index(drop=True).copy()
@@ -306,6 +338,7 @@ def build_features(df):
     g = add_card_history_features(g)
     g = add_category_history_features(g)
     g = add_card_category_diversity(g)
+    g = add_card_identity_features(g)
     g = add_card_hour_pattern_features(g)
 
     # missing-value flags carry signal (e.g. online tx have no device on POS)
@@ -811,17 +844,30 @@ RULE_LABELS = {
 }
 
 
+def _guardrail_geo_corroborated(g: pd.DataFrame) -> pd.Series:
+    """Amount or identity shift — same idea as heuristic ``corroborated``."""
+    return (
+        (g["amt_z_vs_card"] >= 2.0)
+        | (g["amt_z_vs_category"] >= 2.5)
+        | (g["novel_device"] == 1)
+        | (g["novel_ip"] == 1)
+        | (g["novel_category"] == 1)
+    )
+
+
 def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
     """Six deterministic rules that always run alongside the ML model."""
     out = g.copy()
+    if "novel_country" not in out.columns:
+        out = add_card_identity_features(out)
+    geo_corr = _guardrail_geo_corroborated(out)
+    # Soft rules: raise hybrid score (+0.35) but do not alone flood the review queue.
     out["rule_amount"] = (out["amt_z_vs_card"] >= 3.0) | (out["amt_z_vs_category"] >= 3.5)
     out["rule_velocity"] = (out["tx_5min"] >= 4) | (out["tx_1h"] >= 8)
-    out["rule_geo"] = (out["cross_border"] == 1) & (
-        (out["country_hop"] == 1) | (out["fast_country_hop"] == 1)
+    out["rule_geo"] = (out["cross_border"] == 1) & (out["fast_country_hop"] == 1) & geo_corr
+    out["rule_offhours"] = (out["hour_never_seen_for_card"] == 1) & (
+        (out["amt_z_vs_card"] >= 2.5) | (out["amt_z_vs_category"] >= 3.0)
     )
-    out["rule_offhours"] = (
-        (out["hour_never_seen_for_card"] == 1) | (out["hour_rarity_for_card"] >= 0.85)
-    ) & ((out["amt_z_vs_card"] >= 2.0) | (out["amt_z_vs_category"] >= 2.5))
     out["rule_device_ip"] = (out["device_card_fanout_24h"] >= 3) | (
         out["ip_card_fanout_24h"] >= 3
     )
@@ -829,6 +875,21 @@ def apply_rule_guardrails(g: pd.DataFrame) -> pd.DataFrame:
         out["merchant_unique_cards_2h"] >= 3
     )
     out["rule_guardrail"] = out[RULE_COLUMNS].any(axis=1)
+    # High-confidence subset — can enter the review queue without a high model score.
+    out["rule_alert"] = (
+        (out["amt_z_vs_card"] >= 4.5)
+        | (out["amt_z_vs_category"] >= 5.0)
+        | (out["ip_card_fanout_24h"] >= 4)
+        | (out["merchant_unique_cards_2h"] >= 7)
+        | (
+            (out["cross_border"] == 1)
+            & (out["fast_country_hop"] == 1)
+            & geo_corr
+            & (out["amt_z_vs_card"] >= 3.0)
+        )
+        | (out["rule_velocity"] & (out["tx_5min"] >= 5))
+        | (out["rule_velocity"] & (out["tx_1h"] >= 10))
+    )
     out["rule_reason_codes"] = [
         _rule_reason_codes(row) for _, row in out.iterrows()
     ]
@@ -850,9 +911,14 @@ def _rule_reason_codes(row: pd.Series) -> List[str]:
             f"velocity spike ({int(row['tx_5min'])} tx/5m, {int(row['tx_1h'])} tx/1h)"
         )
     if row["rule_geo"]:
-        parts.append(
-            f"geo hop ({row['cardholder_country']}→{row['merchant_country']})"
-        )
+        if row.get("novel_country") == 1:
+            parts.append(
+                f"first {row.get('merchant_country')} purchase for this card"
+            )
+        else:
+            parts.append(
+                f"geo hop ({row['cardholder_country']}→{row['merchant_country']})"
+            )
     if row["rule_offhours"]:
         if row["hour_never_seen_for_card"] == 1:
             parts.append(f"atypical hour for card ({int(row['hour_of_day']):02d}:00)")
@@ -1658,13 +1724,14 @@ class FraudDetectionPipeline:
         threshold = self.threshold if threshold is None else threshold
         g = apply_rule_guardrails(g) if "rule_guardrail" not in g.columns else g
         model_prob, combined = self.hybrid_scores(g, X)
-        flagged = (model_prob >= threshold) | g["rule_guardrail"].values
+        alert = g["rule_alert"].values if "rule_alert" in g.columns else g["rule_guardrail"].values
+        flagged = (model_prob >= threshold) | alert
         out = g.copy()
         out["model_score"] = np.round(model_prob, 4)
         out["fraud_score"] = np.round(combined, 4)
         out["is_fraud"] = flagged
         out["flagged_by_model"] = model_prob >= threshold
-        out["flagged_by_rules"] = g["rule_guardrail"].values
+        out["flagged_by_rules"] = alert
         if self.explainer is not None:
             out = explain_alerts(self.explainer, out, model_prob, flagged_mask=flagged)
         else:
