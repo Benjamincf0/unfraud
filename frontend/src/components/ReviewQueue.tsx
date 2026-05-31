@@ -4,15 +4,10 @@ import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionD
 import { QueueList } from './review/QueueList'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Slider } from './ui/slider'
 import { Tabs } from './ui/tabs'
 import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
 import type { ReviewSession } from '../lib/reviewSessions'
-import type {
-  DecisionAction,
-  ReviewDecision,
-  TransactionFlag,
-} from '../types'
+import type { DecisionAction, ReviewDecision, TransactionFlag } from '../types'
 
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
@@ -34,8 +29,8 @@ const filterOptions: Array<{ value: QueueFilter; label: string }> = [
 ]
 
 const shortcutOptions = [
-  { keys: 'J / ↓', label: 'Next' },
-  { keys: 'K / ↑', label: 'Previous' },
+  { keys: 'J / ArrowDown', label: 'Next' },
+  { keys: 'K / ArrowUp', label: 'Previous' },
   { keys: 'A', label: 'Approve' },
   { keys: 'D', label: 'Dismiss' },
   { keys: 'E', label: 'Escalate' },
@@ -54,9 +49,11 @@ export function ReviewQueue({
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
-  const [falsePositiveCost, setFalsePositiveCost] = useState(2)
-  const [missedFraudCost, setMissedFraudCost] = useState(10)
   const [history, setHistory] = useState<DecisionAction[]>([])
+  const [networkFocus, setNetworkFocus] = useState<{
+    label: string
+    transactionIds: Set<string>
+  } | null>(null)
   const {
     isError: reviewSyncFailed,
     mutate: syncReviewDecision,
@@ -66,13 +63,13 @@ export function ReviewQueue({
 
   const visibleTransactions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    const threshold =
-      falsePositiveCost / Math.max(falsePositiveCost + missedFraudCost, 1)
 
     return transactions.filter((transaction) => {
-      const scorePasses = transaction.score >= threshold
       const filterPasses =
         filter === 'all' ? true : transaction.decision === filter
+      const networkPasses = networkFocus
+        ? networkFocus.transactionIds.has(transaction.transactionId)
+        : true
       const queryPasses = normalizedQuery
         ? [
             transaction.transactionId,
@@ -86,23 +83,14 @@ export function ReviewQueue({
             .includes(normalizedQuery)
         : true
 
-      return scorePasses && filterPasses && queryPasses
+      return filterPasses && networkPasses && queryPasses
     })
-  }, [falsePositiveCost, filter, missedFraudCost, query, transactions])
-
-  const costThreshold = useMemo(
-    () =>
-      Math.round(
-        (falsePositiveCost /
-          Math.max(falsePositiveCost + missedFraudCost, 1)) *
-          100,
-      ),
-    [falsePositiveCost, missedFraudCost],
-  )
+  }, [filter, networkFocus, query, transactions])
 
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
     visibleTransactions[0]
+
   const reviewableTransactionIds = useMemo(
     () => new Set(transactions.map((transaction) => transaction.transactionId)),
     [transactions],
@@ -135,8 +123,28 @@ export function ReviewQueue({
     setTransactions(items)
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
+    setNetworkFocus(null)
     setHistory([])
   }, [fileHash, items])
+
+  const focusRelatedTransactions = useCallback(
+    ({ label, transactionIds }: { label: string; transactionIds: string[] }) => {
+      if (transactionIds.length === 0) {
+        return
+      }
+
+      const ids = new Set(transactionIds)
+      const firstVisible = transactions.find((tx) => ids.has(tx.transactionId))
+
+      setFilter('all')
+      setQuery('')
+      setNetworkFocus({ label, transactionIds: ids })
+      if (firstVisible) {
+        setActiveId(firstVisible.transactionId)
+      }
+    },
+    [transactions],
+  )
 
   const decide = useCallback(
     (
@@ -158,7 +166,7 @@ export function ReviewQueue({
         visibleTransactions[activeIndex + 1] ??
         visibleTransactions[activeIndex - 1] ??
         null
-      const action = {
+      const action: DecisionAction = {
         actedAt: new Date().toISOString(),
         nextDecision,
         previousDecision: transaction.decision,
@@ -205,23 +213,6 @@ export function ReviewQueue({
       transactionId: lastAction.transactionId,
     })
   }, [fileHash, history, syncReviewDecision])
-
-  const selectTransactionFromHistory = useCallback(
-    (transactionId: string) => {
-      const transaction = transactions.find(
-        (item) => item.transactionId === transactionId,
-      )
-
-      if (!transaction) {
-        return
-      }
-
-      setFilter('all')
-      setQuery('')
-      setActiveId(transactionId)
-    },
-    [transactions],
-  )
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
@@ -299,7 +290,8 @@ export function ReviewQueue({
             <strong>{queueStats.pending}</strong>
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
-            <span>{transactions.length} candidates</span>
+            <span>{transactions.length} in queue</span>
+            {networkFocus ? <span>network: {networkFocus.label}</span> : null}
             {reviewSyncFailed ? <span>Sync failed</span> : null}
           </div>
           <div className="topbar-actions">
@@ -312,7 +304,7 @@ export function ReviewQueue({
               >
                 {sessions.map((session) => (
                   <option key={session.fileHash} value={session.fileHash}>
-                    {session.label} · {session.fileHash.slice(0, 8)}
+                    {session.label} - {session.fileHash.slice(0, 8)}
                   </option>
                 ))}
               </select>
@@ -331,6 +323,15 @@ export function ReviewQueue({
             >
               Undo
             </Button>
+            {networkFocus ? (
+              <Button
+                onClick={() => setNetworkFocus(null)}
+                size="sm"
+                variant="outline"
+              >
+                Clear Network Filter
+              </Button>
+            ) : null}
             <Button onClick={onReset} size="sm" variant="outline">
               Upload CSV
             </Button>
@@ -344,35 +345,6 @@ export function ReviewQueue({
             options={filterOptions}
             value={filter}
           />
-          <label className="threshold-control" htmlFor="review-threshold">
-            <span>False alarm cost</span>
-            <Slider
-              id="review-threshold"
-              max={20}
-              min={1}
-              onChange={(event) =>
-                setFalsePositiveCost(Number(event.target.value))
-              }
-              value={falsePositiveCost}
-            />
-            <strong>{falsePositiveCost}</strong>
-          </label>
-          <label className="threshold-control" htmlFor="missed-fraud-cost">
-            <span>Missed fraud cost</span>
-            <Slider
-              id="missed-fraud-cost"
-              max={100}
-              min={1}
-              onChange={(event) =>
-                setMissedFraudCost(Number(event.target.value))
-              }
-              value={missedFraudCost}
-            />
-            <strong>{missedFraudCost}</strong>
-          </label>
-          <div className="cost-threshold" aria-live="polite">
-            Review cutoff {costThreshold}% risk
-          </div>
         </div>
 
         <div className="shortcut-strip" aria-label="Keyboard shortcuts">
@@ -401,37 +373,16 @@ export function ReviewQueue({
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
-              onSelectTransaction={selectTransactionFromHistory}
+              onFocusRelatedTransactions={focusRelatedTransactions}
+              onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
+              transactions={transactions}
               transaction={activeTransaction}
             />
           ) : (
             <EmptyTransactionDetail />
           )}
         </div>
-
-        {history.length > 0 ? (
-          <section className="audit-log" aria-label="Review audit log">
-            <div className="audit-log-header">
-              <strong>Audit log</strong>
-              <span>{history.length} session actions</span>
-            </div>
-            <div className="audit-log-list">
-              {history.slice(0, 8).map((action) => (
-                <button
-                  className="audit-log-row"
-                  key={`${action.transactionId}-${action.actedAt}`}
-                  onClick={() => selectTransactionFromHistory(action.transactionId)}
-                  type="button"
-                >
-                  <span>{action.transactionId}</span>
-                  <strong>{action.nextDecision}</strong>
-                  <time>{new Date(action.actedAt).toLocaleTimeString()}</time>
-                </button>
-              ))}
-            </div>
-          </section>
-        ) : null}
       </main>
     </div>
   )

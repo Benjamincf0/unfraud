@@ -1,4 +1,5 @@
 import { CardAnalysisPanel } from './CardAnalysisPanel'
+import { CrossCardNetworkPanel } from './CrossCardNetworkPanel'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
@@ -12,8 +13,13 @@ type TransactionDetailProps = {
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
   ) => void
+  onFocusRelatedTransactions: (payload: {
+    label: string
+    transactionIds: string[]
+  }) => void
   onSelectTransaction: (transactionId: string) => void
   reviewableTransactionIds: Set<string>
+  transactions: TransactionFlag[]
   transaction: TransactionFlag
 }
 
@@ -22,8 +28,10 @@ export function TransactionDetail({
   cardAnalysisError,
   isCardAnalysisLoading,
   onDecide,
+  onFocusRelatedTransactions,
   onSelectTransaction,
   reviewableTransactionIds,
+  transactions,
   transaction,
 }: TransactionDetailProps) {
   return (
@@ -122,6 +130,11 @@ export function TransactionDetail({
           onSelectTransaction={onSelectTransaction}
           reviewableTransactionIds={reviewableTransactionIds}
           transactionId={transaction.transactionId}
+        />
+        <CrossCardNetworkPanel
+          activeTransaction={transaction}
+          onFocusRelatedTransactions={onFocusRelatedTransactions}
+          transactions={transactions}
         />
 
         <div className="action-row">

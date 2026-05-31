@@ -26,12 +26,20 @@ export type TransactionFlag = {
   reviewedAt?: string
   reviewerNotes?: string
   reasons: RiskReason[]
+  isFraud: boolean
   cardContext: {
     medianAmount: number
     usualCountries: string[]
     usualCategories: string[]
     previousTransactions: number
   }
+}
+
+export type ReviewLogEntry = {
+  transactionId: string
+  action: Exclude<ReviewDecision, 'pending'>
+  reviewerNotes?: string
+  reviewedAt: string
 }
 
 export type CardTransaction = {

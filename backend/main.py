@@ -64,7 +64,7 @@ class ReviewAction(BaseModel):
     action: str  # approve, dismiss, escalate, pending
     reviewer_notes: Optional[str] = None
 
-class ReviewRecord(BaseModel):
+class ReviewLogEntry(BaseModel):
     transaction_id: str
     action: str
     reviewer_notes: Optional[str] = None
@@ -253,14 +253,14 @@ async def get_ip_analysis(file_hash: str, ip_address: str):
         raise HTTPException(status_code=404, detail="No transactions found for this IP")
     return [_to_fraud_analysis(row) for _, row in ip_df.iterrows()]
 
-@app.get("/review/{file_hash}/audit", response_model=List[ReviewRecord])
+@app.get("/review/{file_hash}/audit", response_model=List[ReviewLogEntry])
 async def get_review_audit(file_hash: str):
     if file_hash not in uploaded_files:
         raise HTTPException(status_code=404, detail="File not found")
 
     records = review_log.get(file_hash, {})
     return [
-        ReviewRecord(
+        ReviewLogEntry(
             transaction_id=transaction_id,
             action=str(record["action"]),
             reviewer_notes=record.get("reviewer_notes"),
@@ -293,19 +293,42 @@ async def review_transaction(file_hash: str, transaction_id: str, action: str, r
     
     if action == "pending":
         review_log[file_hash].pop(transaction_id, None)
+        reviewed_at = datetime.now(timezone.utc).isoformat()
     else:
         review_log[file_hash][transaction_id] = {
             "action": action,
             "reviewer_notes": review_action.reviewer_notes,
             "reviewed_at": datetime.now(timezone.utc).isoformat(),
         }
+        reviewed_at = str(review_log[file_hash][transaction_id]["reviewed_at"])
     
     return {
         "message": f"Transaction {transaction_id} set to {action}",
         "transaction_id": transaction_id,
         "action": action,
-        "reviewer_notes": review_action.reviewer_notes
+        "reviewer_notes": review_action.reviewer_notes,
+        "reviewed_at": reviewed_at,
     }
+
+@app.get("/review-log/{file_hash}", response_model=List[ReviewLogEntry])
+async def get_review_log(file_hash: str):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_review_log = review_log.get(file_hash, {})
+    entries: List[ReviewLogEntry] = []
+    for transaction_id, payload in file_review_log.items():
+        entries.append(
+            ReviewLogEntry(
+                transaction_id=transaction_id,
+                action=str(payload.get("action", "")),
+                reviewer_notes=payload.get("reviewer_notes"),
+                reviewed_at=str(payload.get("reviewed_at", "")),
+            )
+        )
+
+    entries.sort(key=lambda item: item.reviewed_at, reverse=True)
+    return entries
 
 @app.get("/export/{file_hash}")
 async def export_analysis(file_hash: str):
