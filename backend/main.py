@@ -10,7 +10,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from fraud_scorer import simple_fraud_detection
-from ml_fraud_scorer import ModelNotAvailableError, is_model_available, ml_fraud_detection
+from ml_fraud_scorer import (
+    DEFAULT_MODEL_PATH,
+    ModelNotAvailableError,
+    is_model_available,
+    ml_fraud_detection,
+)
 
 app = FastAPI()
 
@@ -80,6 +85,7 @@ def read_root():
 def scoring_status():
     return {
         "heuristic": True,
+        "ml_model_path": str(DEFAULT_MODEL_PATH),
         "ml_model_available": is_model_available(),
     }
 

@@ -267,14 +267,14 @@ def _adapt_scored_frame(scored: pd.DataFrame, threshold: float) -> pd.DataFrame:
 def ml_fraud_detection(
     df: pd.DataFrame,
     *,
-    model_path: Path | str = DEFAULT_MODEL_PATH,
+    model_path: Path | str | None = None,
 ) -> pd.DataFrame:
     """Score unlabeled transactions with the trained hybrid ML pipeline."""
     working = _prepare_upload_frame(df)
     if working.empty:
         return _empty_result(df)
 
-    pipeline = get_pipeline(model_path)
+    pipeline = get_pipeline(model_path or DEFAULT_MODEL_PATH)
     if pipeline.explainer is None and pipeline.model is not None:
         sample = working.head(min(len(working), 200))
         g_sample = apply_rule_guardrails(build_features(shrink(sample.copy())))

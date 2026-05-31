@@ -1,23 +1,37 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader } from './ui/card'
 
 type UploadCsvProps = {
   error: string | null
+  isModelStatusLoading: boolean
   isUploading: boolean
   mlModelAvailable: boolean
+  modelPath?: string
+  modelStatusError: string | null
   onUpload: (file: File, useModel: boolean) => void
 }
 
 export function UploadCsv({
   error,
+  isModelStatusLoading,
   isUploading,
   mlModelAvailable,
+  modelPath,
+  modelStatusError,
   onUpload,
 }: UploadCsvProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [useModel, setUseModel] = useState(false)
+  const modelOptionDisabled =
+    isUploading || isModelStatusLoading || !mlModelAvailable
+
+  useEffect(() => {
+    if (!mlModelAvailable) {
+      setUseModel(false)
+    }
+  }, [mlModelAvailable])
 
   const submitUpload = () => {
     if (selectedFile) {
@@ -68,13 +82,19 @@ export function UploadCsv({
           <label className="upload-option">
             <input
               checked={useModel}
-              disabled={isUploading || !mlModelAvailable}
+              disabled={modelOptionDisabled}
               onChange={(event) => setUseModel(event.target.checked)}
               type="checkbox"
             />
             <span>
               Use trained ML model
-              {!mlModelAvailable ? ' (not available — train the backend model first)' : ''}
+              {isModelStatusLoading ? ' (checking backend model...)' : ''}
+              {!isModelStatusLoading && modelStatusError
+                ? ' (could not check backend model)'
+                : ''}
+              {!isModelStatusLoading && !modelStatusError && !mlModelAvailable
+                ? ` (not available at ${modelPath ?? 'backend/algo/ops/fraud_model.pkl'})`
+                : ''}
             </span>
           </label>
 

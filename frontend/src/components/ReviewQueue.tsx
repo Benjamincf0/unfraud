@@ -296,6 +296,7 @@ export function ReviewQueue({
             <span>{transactions.length} in queue</span>
             {networkFocus ? <span>network: {networkFocus.label}</span> : null}
             {reviewSyncFailed ? <span>Sync failed</span> : null}
+            <span>{useModel ? 'ML model' : 'Rules model'}</span>
           </div>
           <div className="topbar-actions">
             {sessions.length > 1 ? (
@@ -307,7 +308,7 @@ export function ReviewQueue({
               >
                 {sessions.map((session) => (
                   <option key={session.fileHash} value={session.fileHash}>
-                    {session.label} - {session.fileHash.slice(0, 8)}
+                    {session.label} - {session.useModel ? 'ML' : 'Rules'} - {session.fileHash.slice(0, 8)}
                   </option>
                 ))}
               </select>

@@ -9,6 +9,7 @@ import {
   type ReviewDataResult,
 } from './api/review'
 import {
+  clearActiveReviewSession,
   loadActiveReviewSession,
   loadReviewSessions,
   saveActiveReviewSession,
@@ -22,11 +23,6 @@ function App() {
     loadActiveReviewSession,
   )
   const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
-  const scoringStatusQuery = useQuery({
-    enabled: isUploadMode,
-    queryFn: fetchScoringStatus,
-    queryKey: ['scoring-status'],
-  })
   const activeSession = sessions.find((session) => session.fileHash === activeFileHash)
   const activeUseModel = activeSession?.useModel ?? reviewData?.useModel ?? false
   const cachedResultQuery = useQuery({
@@ -58,6 +54,12 @@ function App() {
     reviewData?.fileHash === activeFileHash
       ? reviewData
       : cachedResultQuery.data ?? null
+  const shouldShowUploadScreen = !activeReviewData
+  const scoringStatusQuery = useQuery({
+    enabled: shouldShowUploadScreen,
+    queryFn: fetchScoringStatus,
+    queryKey: ['scoring-status'],
+  })
 
   const uploadCsv = (file: File, useModel: boolean) => {
     uploadMutation.mutate({ file, useModel })
@@ -71,6 +73,7 @@ function App() {
   }, [])
 
   const showUploadScreen = useCallback(() => {
+    clearActiveReviewSession()
     setReviewData(null)
     setActiveFileHash(null)
     setIsUploadMode(true)
@@ -93,7 +96,14 @@ function App() {
             : null
         }
         isUploading={uploadMutation.isPending || cachedResultQuery.isFetching}
+        isModelStatusLoading={scoringStatusQuery.isFetching}
         mlModelAvailable={scoringStatusQuery.data?.ml_model_available ?? false}
+        modelPath={scoringStatusQuery.data?.ml_model_path}
+        modelStatusError={
+          scoringStatusQuery.error instanceof Error
+            ? scoringStatusQuery.error.message
+            : null
+        }
         onUpload={uploadCsv}
       />
     )
