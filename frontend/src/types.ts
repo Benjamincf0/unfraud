@@ -13,6 +13,14 @@ export type SearchFieldKey =
   | 'device_id'
   | 'ip_address'
 
+export type MlScoringInfo = {
+  modelScore: number | null
+  modelThreshold: number | null
+  flaggedByModel: boolean
+  flaggedByAlert: boolean
+  ruleGuardrail: boolean
+}
+
 export type RiskReason = {
   id: string
   code?: string
@@ -46,6 +54,7 @@ export type TransactionFlag = {
   reviewerNotes?: string
   reasons: RiskReason[]
   isFraud: boolean
+  mlScoring?: MlScoringInfo
   cardContext: {
     medianAmount: number
     usualCountries: string[]

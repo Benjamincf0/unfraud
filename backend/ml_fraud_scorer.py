@@ -122,6 +122,7 @@ def _model_decisions(
             "is_fraud": flagged,
             "flagged_by_model": (model_prob >= threshold),
             "flagged_by_rules": rule_alert,
+            "rule_guardrail": featured["rule_guardrail"].values,
         }
     )
     return decisions, featured
@@ -281,7 +282,7 @@ def ml_fraud_detection(
 
     result = heuristic.copy()
     keyed = decisions.set_index("transaction_id")
-    for column in ML_DECISION_COLUMNS:
+    for column in (*ML_DECISION_COLUMNS, "rule_guardrail"):
         result[column] = result["transaction_id"].astype(str).map(keyed[column])
 
     result = _apply_shap_explanations(result, pipeline, featured, heuristic)

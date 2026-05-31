@@ -19,6 +19,7 @@ import { Tabs } from "./ui/tabs";
 import {
   applyScorerDetailToTransaction,
   fetchCardAnalysis,
+  fetchExplorerDataset,
   fetchFullReviewQueue,
   fetchRelatedTransactions,
   fetchReviewLog,
@@ -30,6 +31,10 @@ import {
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
 import { defaultDecisionFeedback } from "../lib/reviewFeedback";
+import {
+  passesQueueCauseFilter,
+  type QueueCauseFilter,
+} from "../lib/mlScoring";
 import { mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
@@ -51,6 +56,7 @@ import type {
 } from "../types";
 
 type QueueFilter = "pending" | "all" | "approved" | "dismissed" | "escalated";
+type ViewMode = "queue" | "explorer";
 
 function isFlaggedTransaction(transaction: TransactionFlag) {
   return transaction.isFraud || transaction.score > 0;
@@ -201,6 +207,18 @@ const sortModeOptions: Array<{ value: RiskSortMode; label: string }> = [
   { value: "model", label: "Model risk" },
 ];
 
+const viewModeOptions: Array<{ value: ViewMode; label: string }> = [
+  { value: "queue", label: "Review queue" },
+  { value: "explorer", label: "All transactions" },
+];
+
+const queueCauseOptions: Array<{ value: QueueCauseFilter; label: string }> = [
+  { value: "all", label: "All queued" },
+  { value: "model", label: "Model only" },
+  { value: "alert", label: "Alert rule only" },
+  { value: "both", label: "Model + alert" },
+];
+
 function AuditLog({
   entries,
   error,
@@ -313,6 +331,9 @@ export function ReviewQueue({
   });
   const summary = summaryQuery.data ?? session.summary;
   const [useModel, setUseModel] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("queue");
+  const [queueCauseFilter, setQueueCauseFilter] =
+    useState<QueueCauseFilter>("all");
   const [sortMode, setSortMode] = useState<RiskSortMode>("active");
   const [riskTuningByMode, setRiskTuningByMode] =
     useState<RiskTuningByMode>(defaultRiskTuning);
@@ -322,6 +343,16 @@ export function ReviewQueue({
   const [modelById, setModelById] = useState(
     () => new Map<string, TransactionFlag>(),
   );
+  const [explorerHeuristicById, setExplorerHeuristicById] = useState(
+    () => new Map<string, TransactionFlag>(),
+  );
+  const [explorerModelById, setExplorerModelById] = useState(
+    () => new Map<string, TransactionFlag>(),
+  );
+  const [explorerLoad, setExplorerLoad] = useState<{
+    error: string | null;
+    status: "idle" | "loading" | "ready" | "error";
+  }>({ error: null, status: "idle" });
   const [relatedById, setRelatedById] = useState(
     () => new Map<string, TransactionFlag[]>(),
   );
@@ -447,7 +478,12 @@ export function ReviewQueue({
     setEnrichingTransactionId(null);
     detailInFlightRef.current = new Map();
     setUseModel(false);
+    setViewMode("queue");
+    setQueueCauseFilter("all");
     setSortMode("active");
+    setExplorerHeuristicById(new Map());
+    setExplorerModelById(new Map());
+    setExplorerLoad({ error: null, status: "idle" });
     setRiskTuningByMode(defaultRiskTuning);
     setActiveId("");
     setFilter("pending");
@@ -725,11 +761,74 @@ export function ReviewQueue({
     ? summary.modelFlaggedQueueStats
     : summary.flaggedQueueStats;
 
-  const transactions = useMemo(
-    () =>
-      flaggedTransactionsFrom(useModel ? modelById : heuristicById),
-    [heuristicById, modelById, useModel],
-  );
+  const activeDataById = useMemo(() => {
+    if (viewMode === "explorer") {
+      return useModel ? explorerModelById : explorerHeuristicById;
+    }
+    return useModel ? modelById : heuristicById;
+  }, [
+    explorerHeuristicById,
+    explorerModelById,
+    heuristicById,
+    modelById,
+    useModel,
+    viewMode,
+  ]);
+
+  const transactions = useMemo(() => {
+    if (viewMode === "queue") {
+      return flaggedTransactionsFrom(activeDataById);
+    }
+    return Array.from(activeDataById.values());
+  }, [activeDataById, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "explorer") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadExplorer() {
+      setExplorerLoad({ error: null, status: "loading" });
+      try {
+        const items = await fetchExplorerDataset(fileHash, { useModel });
+        if (cancelled) {
+          return;
+        }
+        const index = buildTransactionIndex(items);
+        if (useModel) {
+          setExplorerModelById(index);
+        } else {
+          setExplorerHeuristicById(index);
+        }
+        setExplorerLoad({ error: null, status: "ready" });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setExplorerLoad({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not load all transactions.",
+          status: "error",
+        });
+      }
+    }
+
+    void loadExplorer();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileHash, useModel, viewMode]);
+
+  useEffect(() => {
+    setExplorerHeuristicById(new Map());
+    setExplorerModelById(new Map());
+    setExplorerLoad({ error: null, status: "idle" });
+  }, [useModel]);
 
   const heuristicIndex = useMemo(
     () => buildTransactionIndex(Array.from(heuristicById.values())),
@@ -796,6 +895,10 @@ export function ReviewQueue({
       .map((transaction) => {
         const filterPasses =
           filter === "all" ? true : transaction.decision === filter;
+        const causePasses =
+          viewMode !== "queue" ||
+          !useModel ||
+          passesQueueCauseFilter(transaction, queueCauseFilter);
         const thresholdScore =
           scoreIndex.get(transaction.transactionId) ?? transaction.score;
         const thresholdPasses = thresholdScore * 100 >= effectiveRiskThreshold;
@@ -828,7 +931,11 @@ export function ReviewQueue({
           matchedFieldLabels,
           transaction,
           visible:
-            filterPasses && thresholdPasses && networkPasses && queryPasses,
+            filterPasses &&
+            causePasses &&
+            thresholdPasses &&
+            networkPasses &&
+            queryPasses,
         };
       })
       .filter((entry) => entry.visible);
@@ -838,8 +945,11 @@ export function ReviewQueue({
     networkFocus,
     orderedTransactions,
     query,
+    queueCauseFilter,
     scoreIndex,
     searchScopeKeys,
+    useModel,
+    viewMode,
   ]);
 
   const visibleTransactions = useMemo(
@@ -876,10 +986,14 @@ export function ReviewQueue({
       : null
     : null;
 
-  const reviewableTransactionIds = useMemo(
-    () => new Set(transactions.map((transaction) => transaction.transactionId)),
-    [transactions],
-  );
+  const reviewableTransactionIds = useMemo(() => {
+    const source = useModel ? modelById : heuristicById;
+    return new Set(
+      Array.from(source.values())
+        .filter((transaction) => transaction.isFraud)
+        .map((transaction) => transaction.transactionId),
+    );
+  }, [heuristicById, modelById, useModel]);
 
   const activeCardAnalysisQuery = useQuery({
     enabled: Boolean(activeTransaction?.cardId),
@@ -964,6 +1078,9 @@ export function ReviewQueue({
     activeQueueProgress.total,
     effectiveRiskThreshold,
     filter,
+    queueCauseFilter,
+    useModel,
+    viewMode,
     isQueueLoading,
     networkFocus,
     notQueuedCount,
@@ -1273,16 +1390,29 @@ export function ReviewQueue({
           <div
             className="review-status"
             aria-label="Review queue summary"
-            title="Flagged = scorer marked suspicious or gave a risk score above zero. The upload is fully scored; only flagged rows appear in the list below."
+            title="Review queue = rows flagged for human triage (is_fraud). Explorer shows all scored rows. Flag rate is not the same as hidden fraud rate in the dataset."
           >
             <p className="review-status-primary">
               <strong>
                 {queuedCount.toLocaleString()} /{' '}
                 {totalScoredCount.toLocaleString()}
               </strong>
-              <span>flagged for review</span>
+              <span>
+                {viewMode === "queue" ? "in review queue" : "scored (explorer)"}
+              </span>
               <span className="review-status-scorer">{scorerLabel}</span>
             </p>
+            {useModel && summary.mlModelAvailable ? (
+              <p className="review-status-ml-breakdown">
+                Queue: {summary.modelFlaggedCount} · model-only{' '}
+                {summary.modelOnlyCount} · alert-only {summary.alertOnlyCount} ·
+                both {summary.modelAlertBothCount} · elevated (soft rule only){' '}
+                {summary.softRuleOnlyCount}
+                {summary.modelThreshold != null
+                  ? ` · model bar ${Math.round(summary.modelThreshold * 100)}%`
+                  : ''}
+              </p>
+            ) : null}
             {statusContextLine ? (
               <p className="review-status-context">{statusContextLine}</p>
             ) : null}
@@ -1421,18 +1551,39 @@ export function ReviewQueue({
         <div className="review-controls">
           <Tabs
             className="queue-tabs"
-            onValueChange={setFilter}
-            options={queueFilterOptions}
-            value={filter}
+            onValueChange={(value) => setViewMode(value as ViewMode)}
+            options={viewModeOptions}
+            value={viewMode}
           />
+          {viewMode === "queue" ? (
+            <Tabs
+              className="queue-tabs"
+              onValueChange={setFilter}
+              options={queueFilterOptions}
+              value={filter}
+            />
+          ) : null}
+          {viewMode === "queue" && useModel && summary.mlModelAvailable ? (
+            <Tabs
+              className="queue-tabs queue-cause-tabs"
+              onValueChange={(value) =>
+                setQueueCauseFilter(value as QueueCauseFilter)
+              }
+              options={queueCauseOptions}
+              value={queueCauseFilter}
+            />
+          ) : null}
 
           <div className="tuning-controls" aria-label="Queue tuning controls">
             <div className="tuning-controls-sliders">
               <label className="tuning-control">
                 <span>
-                  Risk threshold (
-                  {sortModeOptions.find((option) => option.value === sortMode)?.label}
-                  )
+                  {viewMode === "explorer"
+                    ? "Min. risk score (filter list)"
+                    : "Risk threshold (" +
+                      (sortModeOptions.find((option) => option.value === sortMode)
+                        ?.label ?? "score") +
+                      ")"}
                 </span>
                 <Slider
                   aria-label="Risk threshold"
@@ -1539,12 +1690,23 @@ export function ReviewQueue({
               : "review-layout"
           }
         >
+          {viewMode === "explorer" && explorerLoad.status === "loading" ? (
+            <p className="empty-copy queue-explorer-loading">
+              Loading all transactions…
+            </p>
+          ) : null}
+          {viewMode === "explorer" && explorerLoad.status === "error" ? (
+            <p className="empty-copy" role="alert">
+              {explorerLoad.error}
+            </p>
+          ) : null}
           <QueueList
             activeTransactionId={activeTransaction?.transactionId}
             matchFieldsByTransactionId={matchFieldsByTransactionId}
             onSelect={setActiveId}
             onSortModeChange={setSortMode}
             searchQuery={query}
+            showScoringTiers={viewMode === "explorer"}
             sortMode={sortMode}
             sortModeOptions={sortModeOptions}
             sortModeDisabled={!summary.mlModelAvailable}
@@ -1562,6 +1724,7 @@ export function ReviewQueue({
               decisionFeedback={activeDecisionFeedback}
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               isReasonsLoading={isReasonsLoading}
+              modelThreshold={summary.modelThreshold}
               onDecide={decide}
               onDecisionFeedbackChange={updateDecisionFeedback}
               onFilterCardCountry={filterByCardCountry}
@@ -1572,6 +1735,7 @@ export function ReviewQueue({
               reviewableTransactionIds={reviewableTransactionIds}
               transactions={networkTransactions}
               transaction={activeTransaction}
+              useModel={useModel}
             />
           ) : (
             <EmptyTransactionDetail />

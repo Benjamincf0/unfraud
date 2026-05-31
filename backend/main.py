@@ -246,6 +246,11 @@ class AnalysisSummaryResponse(BaseModel):
     ml_model_available: bool
     flagged_queue_stats: FlaggedQueueStats
     model_flagged_queue_stats: FlaggedQueueStats
+    model_threshold: Optional[float] = None
+    model_only_count: int = 0
+    alert_only_count: int = 0
+    model_alert_both_count: int = 0
+    soft_rule_only_count: int = 0
 
 
 class QueueTransactionItem(TransactionBase):
@@ -256,6 +261,10 @@ class QueueTransactionItem(TransactionBase):
     reviewer_notes: Optional[str] = None
     reviewed_at: Optional[str] = None
     card_baseline: Dict[str, Any] = Field(default_factory=dict)
+    model_score: Optional[float] = None
+    flagged_by_model: Optional[bool] = None
+    flagged_by_alert: Optional[bool] = None
+    rule_guardrail: Optional[bool] = None
 
 
 class QueuePageResponse(BaseModel):
@@ -273,6 +282,11 @@ class ScorerDetail(BaseModel):
     card_baseline: Dict[str, Any] = Field(default_factory=dict)
     cross_card_signals: Dict[str, Any] = Field(default_factory=dict)
     graph_features: Dict[str, float] = Field(default_factory=dict)
+    model_score: Optional[float] = None
+    model_threshold: Optional[float] = None
+    flagged_by_model: Optional[bool] = None
+    flagged_by_alert: Optional[bool] = None
+    rule_guardrail: Optional[bool] = None
 
 
 class TransactionDetailResponse(TransactionBase):
@@ -643,10 +657,39 @@ def _queue_dataframe(
 ) -> pd.DataFrame:
     analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
     if flagged_only:
-        analyzed_df = analyzed_df[
-            analyzed_df["is_fraud"] | (analyzed_df["fraud_score"] > 0)
-        ]
+        analyzed_df = analyzed_df[analyzed_df["is_fraud"]]
     return analyzed_df.sort_values("fraud_score", ascending=False)
+
+
+def _ml_scoring_fields(row: pd.Series) -> Dict[str, Any]:
+    if "model_score" not in row.index or pd.isna(row.get("model_score")):
+        return {}
+    return {
+        "model_score": float(row["model_score"]),
+        "flagged_by_model": bool(row.get("flagged_by_model", False)),
+        "flagged_by_alert": bool(row.get("flagged_by_rules", False)),
+        "rule_guardrail": bool(row.get("rule_guardrail", False)),
+    }
+
+
+def _ml_summary_stats(model_df: pd.DataFrame) -> Dict[str, int]:
+    if model_df.empty or "is_fraud" not in model_df.columns:
+        return {
+            "model_only_count": 0,
+            "alert_only_count": 0,
+            "model_alert_both_count": 0,
+            "soft_rule_only_count": 0,
+        }
+    flagged = model_df["is_fraud"].astype(bool)
+    by_model = model_df.get("flagged_by_model", pd.Series(False, index=model_df.index)).astype(bool)
+    by_alert = model_df.get("flagged_by_rules", pd.Series(False, index=model_df.index)).astype(bool)
+    soft = model_df.get("rule_guardrail", pd.Series(False, index=model_df.index)).astype(bool)
+    return {
+        "model_only_count": int((by_model & ~by_alert).sum()),
+        "alert_only_count": int((by_alert & ~by_model).sum()),
+        "model_alert_both_count": int((by_model & by_alert).sum()),
+        "soft_rule_only_count": int((soft & ~flagged).sum()),
+    }
 
 
 def _row_to_queue_item(
@@ -677,10 +720,15 @@ def _row_to_queue_item(
             if include_card_baseline
             else {}
         ),
+        **_ml_scoring_fields(row),
     )
 
 
-def _row_to_scorer_detail(row: pd.Series) -> ScorerDetail:
+def _row_to_scorer_detail(
+    row: pd.Series,
+    *,
+    model_threshold: Optional[float] = None,
+) -> ScorerDetail:
     parsed_breakdown = _parse_json_field(row.get("score_breakdown"), [])
     if not isinstance(parsed_breakdown, list):
         parsed_breakdown = []
@@ -696,6 +744,7 @@ def _row_to_scorer_detail(row: pd.Series) -> ScorerDetail:
     if not isinstance(graph_features, dict):
         graph_features = {}
 
+    ml_fields = _ml_scoring_fields(row)
     return ScorerDetail(
         fraud_score=float(row["fraud_score"]),
         is_fraud=bool(row["is_fraud"]),
@@ -710,6 +759,8 @@ def _row_to_scorer_detail(row: pd.Series) -> ScorerDetail:
             for key, value in graph_features.items()
             if isinstance(value, (int, float))
         },
+        model_threshold=model_threshold if ml_fields else None,
+        **ml_fields,
     )
 
 
@@ -757,15 +808,22 @@ async def get_analysis_summary(file_hash: str):
         raise HTTPException(status_code=404, detail="File not found")
 
     analyzed_df = _analysis_with_review_columns(file_hash, use_model=False)
-    flagged_count = int(
-        (analyzed_df["is_fraud"] | (analyzed_df["fraud_score"] > 0)).sum()
-    )
+    flagged_count = int(analyzed_df["is_fraud"].sum())
     model_flagged_count = 0
+    model_threshold = None
+    ml_stats = {
+        "model_only_count": 0,
+        "alert_only_count": 0,
+        "model_alert_both_count": 0,
+        "soft_rule_only_count": 0,
+    }
     if is_model_available():
+        from ml_fraud_scorer import get_pipeline
+
         model_df = _analysis_with_review_columns(file_hash, use_model=True)
-        model_flagged_count = int(
-            (model_df["is_fraud"] | (model_df["fraud_score"] > 0)).sum()
-        )
+        model_flagged_count = int(model_df["is_fraud"].sum())
+        model_threshold = float(get_pipeline().threshold)
+        ml_stats = _ml_summary_stats(model_df)
 
     model_flagged_queue_stats = (
         _flagged_queue_stats(file_hash, use_model=True)
@@ -785,6 +843,8 @@ async def get_analysis_summary(file_hash: str):
         ml_model_available=is_model_available(),
         flagged_queue_stats=_flagged_queue_stats(file_hash, use_model=False),
         model_flagged_queue_stats=model_flagged_queue_stats,
+        model_threshold=model_threshold,
+        **ml_stats,
     )
 
 
@@ -847,10 +907,17 @@ async def get_transaction_detail(file_hash: str, transaction_id: str):
 
     heuristic_row = _lookup_analysis_row(file_hash, transaction_id, use_model=False)
     model_detail = None
+    model_threshold = None
     if is_model_available():
         try:
+            from ml_fraud_scorer import get_pipeline
+
+            model_threshold = float(get_pipeline().threshold)
             model_row = _lookup_analysis_row(file_hash, transaction_id, use_model=True)
-            model_detail = _row_to_scorer_detail(model_row)
+            model_detail = _row_to_scorer_detail(
+                model_row,
+                model_threshold=model_threshold,
+            )
         except HTTPException:
             model_detail = None
 

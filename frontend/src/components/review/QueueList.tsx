@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { getScoringTier, queueCauseLabel } from '../../lib/mlScoring'
 import { formatCurrency } from '../../lib/utils'
 import type { RiskSortMode } from '../../lib/scoringViews'
 import type { TransactionFlag } from '../../types'
@@ -15,6 +16,7 @@ type QueueListProps = {
   sortMode: RiskSortMode
   sortModeDisabled?: boolean
   sortModeOptions: Array<{ value: RiskSortMode; label: string }>
+  showScoringTiers?: boolean
   transactions: TransactionFlag[]
 }
 
@@ -27,6 +29,7 @@ export function QueueList({
   sortMode,
   sortModeDisabled = false,
   sortModeOptions,
+  showScoringTiers = false,
   transactions,
 }: QueueListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -90,14 +93,20 @@ export function QueueList({
               const matchedFields =
                 matchFieldsByTransactionId?.get(transaction.transactionId) ?? []
               const amountText = formatCurrency(transaction.amount)
+              const tier = showScoringTiers ? getScoringTier(transaction) : null
+              const cause = queueCauseLabel(transaction)
 
               return (
                 <button
-                  className={
+                  className={[
+                    'queue-item',
                     transaction.transactionId === activeTransactionId
-                      ? 'queue-item queue-item-active'
-                      : 'queue-item'
-                  }
+                      ? 'queue-item-active'
+                      : '',
+                    tier ? `queue-item-tier-${tier}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                   key={transaction.transactionId}
                   onClick={() => onSelect(transaction.transactionId)}
                   style={{
@@ -127,7 +136,16 @@ export function QueueList({
                         ? highlightLooseText(amountText, searchQuery)
                         : amountText}
                     </span>
-                    <span>{Math.round(transaction.score * 100)} risk</span>
+                    <span className="queue-item-meta-scores">
+                      <span>{Math.round(transaction.score * 100)} risk</span>
+                      {cause ? (
+                        <span className="queue-item-badge">{cause}</span>
+                      ) : tier === 'elevated' ? (
+                        <span className="queue-item-badge queue-item-badge-muted">
+                          Elevated
+                        </span>
+                      ) : null}
+                    </span>
                   </span>
                 </button>
               )
