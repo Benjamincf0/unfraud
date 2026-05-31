@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -30,6 +31,7 @@ import { applyModelScores, mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
   defaultRiskTuning,
+  DETAIL_PREFETCH_CONCURRENCY,
   getEffectiveRiskThreshold,
   QUEUE_PAGE_SIZE,
   resolveRiskSortMode,
@@ -305,6 +307,15 @@ export function ReviewQueue({
   const [enrichingTransactionId, setEnrichingTransactionId] = useState<
     string | null
   >(null);
+  const heuristicByIdRef = useRef(heuristicById);
+  const modelByIdRef = useRef(modelById);
+  const relatedByIdRef = useRef(relatedById);
+  const enrichedTransactionIdsRef = useRef(enrichedTransactionIds);
+  const detailInFlightRef = useRef(new Map<string, Promise<boolean>>());
+  heuristicByIdRef.current = heuristicById;
+  modelByIdRef.current = modelById;
+  relatedByIdRef.current = relatedById;
+  enrichedTransactionIdsRef.current = enrichedTransactionIds;
   const bootstrapQuery = useQuery({
     queryFn: () => fetchReviewBootstrap(fileHash, summary),
     queryKey: ["review-bootstrap", fileHash],
@@ -358,6 +369,7 @@ export function ReviewQueue({
     setEnrichedTransactionIds(new Set());
     setEnrichmentFailedIds(new Set());
     setEnrichingTransactionId(null);
+    detailInFlightRef.current = new Map();
     setUseModel(false);
     setSortMode("active");
     setRiskTuningByMode(defaultRiskTuning);
@@ -387,6 +399,202 @@ export function ReviewQueue({
     );
   }, [bootstrapQuery.data]);
 
+  const enrichTransactionDetail = useCallback(
+    async (transactionId: string) => {
+      if (enrichedTransactionIdsRef.current.has(transactionId)) {
+        return true;
+      }
+
+      const inFlight = detailInFlightRef.current.get(transactionId);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      const enrichment = (async () => {
+        let heuristicItem = heuristicByIdRef.current.get(transactionId);
+        if (!heuristicItem) {
+          const heuristicPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId,
+            useModel: false,
+          });
+          heuristicItem = heuristicPage.items[0];
+          if (heuristicItem) {
+            setHeuristicById((current) =>
+              mergeTransactionMaps(current, [heuristicItem!]),
+            );
+          }
+        }
+
+        let modelItem = modelByIdRef.current.get(transactionId);
+        if (summary.mlModelAvailable && !modelItem) {
+          const modelPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId,
+            useModel: true,
+          });
+          modelItem = modelPage.items[0];
+          if (modelItem) {
+            setModelById((current) =>
+              mergeTransactionMaps(current, [modelItem!]),
+            );
+          }
+        }
+
+        const detail = await fetchTransactionDetail(fileHash, transactionId);
+
+        setHeuristicById((current) => {
+          const existing = current.get(transactionId) ?? heuristicItem;
+          if (!existing) {
+            return current;
+          }
+
+          const next = new Map(current);
+          next.set(
+            transactionId,
+            applyScorerDetailToTransaction(
+              existing,
+              detail.heuristic,
+              transactionId,
+            ),
+          );
+          return next;
+        });
+
+        if (detail.model) {
+          setModelById((current) => {
+            const existing =
+              current.get(transactionId) ?? modelItem ?? heuristicItem;
+            if (!existing) {
+              return current;
+            }
+
+            const next = new Map(current);
+            next.set(
+              transactionId,
+              applyScorerDetailToTransaction(
+                existing,
+                detail.model!,
+                transactionId,
+              ),
+            );
+            return next;
+          });
+        }
+
+        enrichedTransactionIdsRef.current.add(transactionId);
+        setEnrichedTransactionIds(
+          new Set(enrichedTransactionIdsRef.current),
+        );
+        setEnrichmentFailedIds((current) => {
+          if (!current.has(transactionId)) {
+            return current;
+          }
+
+          const next = new Set(current);
+          next.delete(transactionId);
+          return next;
+        });
+        return true;
+      })();
+
+      detailInFlightRef.current.set(transactionId, enrichment);
+
+      try {
+        return await enrichment;
+      } catch {
+        setEnrichmentFailedIds((current) => {
+          const next = new Set(current);
+          next.add(transactionId);
+          return next;
+        });
+        return false;
+      } finally {
+        detailInFlightRef.current.delete(transactionId);
+      }
+    },
+    [fileHash, summary.mlModelAvailable],
+  );
+
+  const loadRelatedForTransaction = useCallback(
+    async (transactionId: string) => {
+      if (relatedByIdRef.current.has(transactionId)) {
+        return;
+      }
+
+      const relatedHeuristic = await fetchRelatedTransactions(
+        fileHash,
+        transactionId,
+        false,
+      );
+
+      setRelatedById((current) => {
+        const next = new Map(current);
+        next.set(transactionId, relatedHeuristic);
+        return next;
+      });
+      setHeuristicById((current) =>
+        mergeTransactionMaps(current, relatedHeuristic),
+      );
+
+      if (summary.mlModelAvailable) {
+        const relatedModel = await fetchRelatedTransactions(
+          fileHash,
+          transactionId,
+          true,
+        );
+        setModelById((current) =>
+          mergeTransactionMaps(current, relatedModel),
+        );
+      }
+    },
+    [fileHash, summary.mlModelAvailable],
+  );
+
+  useEffect(() => {
+    if (!bootstrapQuery.data) {
+      return;
+    }
+
+    let cancelled = false;
+    const bootstrapIds = bootstrapQuery.data.heuristic.map(
+      (transaction) => transaction.transactionId,
+    );
+
+    async function prefetchBootstrapDetails() {
+      const [priorityId, ...remainingIds] = bootstrapIds;
+
+      if (priorityId && !cancelled) {
+        await enrichTransactionDetail(priorityId).catch(() => false);
+      }
+
+      let nextIndex = 0;
+
+      async function worker() {
+        while (nextIndex < remainingIds.length && !cancelled) {
+          const transactionId = remainingIds[nextIndex];
+          nextIndex += 1;
+
+          if (enrichedTransactionIdsRef.current.has(transactionId)) {
+            continue;
+          }
+
+          await enrichTransactionDetail(transactionId).catch(() => false);
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: DETAIL_PREFETCH_CONCURRENCY }, () => worker()),
+      );
+    }
+
+    void prefetchBootstrapDetails();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapQuery.data, enrichTransactionDetail]);
+
   useLayoutEffect(() => {
     if (!activeId) {
       setEnrichingTransactionId(null);
@@ -402,151 +610,33 @@ export function ReviewQueue({
   }, [activeId, enrichedTransactionIds]);
 
   useEffect(() => {
-    if (!activeId || enrichedTransactionIds.has(activeId)) {
+    if (!activeId) {
       return;
     }
 
     let cancelled = false;
 
-    async function loadActiveTransaction() {
-      try {
-        const heuristicPage = await fetchReviewQueuePage(fileHash, {
-          flaggedOnly: false,
-          transactionId: activeId,
-          useModel: false,
-        });
-        if (cancelled) {
-          return;
-        }
-        setHeuristicById((current) =>
-          mergeTransactionMaps(current, heuristicPage.items),
-        );
+    async function onActiveTransactionChange() {
+      const needsDetail = !enrichedTransactionIdsRef.current.has(activeId);
 
-        let modelItem: TransactionFlag | undefined;
-        if (summary.mlModelAvailable) {
-          const modelPage = await fetchReviewQueuePage(fileHash, {
-            flaggedOnly: false,
-            transactionId: activeId,
-            useModel: true,
-          });
-          if (cancelled) {
-            return;
-          }
-          modelItem = modelPage.items[0];
-          setModelById((current) =>
-            mergeTransactionMaps(current, modelPage.items),
-          );
-        }
-
-        const relatedHeuristic = await fetchRelatedTransactions(
-          fileHash,
-          activeId,
-          false,
-        );
-        if (cancelled) {
-          return;
-        }
-
-        setRelatedById((current) => {
-          const next = new Map(current);
-          next.set(activeId, relatedHeuristic);
-          return next;
-        });
-        setHeuristicById((current) =>
-          mergeTransactionMaps(current, relatedHeuristic),
-        );
-
-        if (summary.mlModelAvailable) {
-          const relatedModel = await fetchRelatedTransactions(
-            fileHash,
-            activeId,
-            true,
-          );
-          if (cancelled) {
-            return;
-          }
-
-          setModelById((current) =>
-            mergeTransactionMaps(current, relatedModel),
-          );
-        }
-
-        const detail = await fetchTransactionDetail(fileHash, activeId);
-        if (cancelled) {
-          return;
-        }
-
-        const heuristicItem = heuristicPage.items[0];
-
-        setHeuristicById((current) => {
-          const existing = current.get(activeId) ?? heuristicItem;
-          if (!existing) {
-            return current;
-          }
-
-          const next = new Map(current);
-          next.set(
-            activeId,
-            applyScorerDetailToTransaction(
-              existing,
-              detail.heuristic,
-              activeId,
-            ),
-          );
-          return next;
-        });
-
-        if (detail.model) {
-          setModelById((current) => {
-            const existing = current.get(activeId) ?? modelItem ?? heuristicItem;
-            if (!existing) {
-              return current;
-            }
-
-            const next = new Map(current);
-            next.set(
-              activeId,
-              applyScorerDetailToTransaction(existing, detail.model!, activeId),
-            );
-            return next;
-          });
-        }
-
-        setEnrichedTransactionIds((current) => {
-          const next = new Set(current);
-          next.add(activeId);
-          return next;
-        });
-        setEnrichmentFailedIds((current) => {
-          if (!current.has(activeId)) {
-            return current;
-          }
-
-          const next = new Set(current);
-          next.delete(activeId);
-          return next;
-        });
+      if (needsDetail) {
+        await enrichTransactionDetail(activeId);
         if (!cancelled) {
-          setEnrichingTransactionId(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setEnrichmentFailedIds((current) => {
-            const next = new Set(current);
-            next.add(activeId);
-            return next;
-          });
           setEnrichingTransactionId(null);
         }
       }
+
+      if (!cancelled) {
+        await loadRelatedForTransaction(activeId).catch(() => undefined);
+      }
     }
 
-    void loadActiveTransaction();
+    void onActiveTransactionChange();
 
     return () => {
       cancelled = true;
     };
-  }, [activeId, enrichedTransactionIds, fileHash, summary.mlModelAvailable]);
+  }, [activeId, enrichTransactionDetail, loadRelatedForTransaction]);
 
   const flaggedTransactions = useMemo(
     () =>
@@ -835,10 +925,35 @@ export function ReviewQueue({
       setLoadedQueueCount(
         (current) => current + heuristicPage.items.length,
       );
+
+      void (async () => {
+        let nextIndex = 0;
+        const transactionIds = heuristicPage.items.map(
+          (transaction) => transaction.transactionId,
+        );
+
+        async function worker() {
+          while (nextIndex < transactionIds.length) {
+            const transactionId = transactionIds[nextIndex];
+            nextIndex += 1;
+
+            if (enrichedTransactionIdsRef.current.has(transactionId)) {
+              continue;
+            }
+
+            await enrichTransactionDetail(transactionId).catch(() => false);
+          }
+        }
+
+        await Promise.all(
+          Array.from({ length: DETAIL_PREFETCH_CONCURRENCY }, () => worker()),
+        );
+      })();
     } finally {
       setIsLoadingMore(false);
     }
   }, [
+    enrichTransactionDetail,
     fileHash,
     isLoadingMore,
     loadedQueueCount,

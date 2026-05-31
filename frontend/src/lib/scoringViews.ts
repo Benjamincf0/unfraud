@@ -29,6 +29,7 @@ export const defaultRiskTuning: RiskTuningByMode = {
 
 export const QUEUE_BOOTSTRAP_LIMIT = 300
 export const QUEUE_PAGE_SIZE = 200
+export const DETAIL_PREFETCH_CONCURRENCY = 8
 
 const neutralFalsePositiveCost = 5
 
