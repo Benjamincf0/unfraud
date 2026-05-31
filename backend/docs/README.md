@@ -24,7 +24,7 @@ Technical quick reference (endpoints, install commands) remains in [../README.md
 | [02-data-and-workflow.md](02-data-and-workflow.md) | What data goes in, what comes out, and the reviewer journey |
 | [03-api-guide.md](03-api-guide.md) | Every HTTP endpoint, explained as user actions rather than code |
 | [04-heuristic-scoring.md](04-heuristic-scoring.md) | The default **rules-based** detector (no trained model file required) |
-| [05-machine-learning-model.md](05-machine-learning-model.md) | The **LightGBM** model, hybrid scoring, explainability, and guardrails |
+| [05-machine-learning-model.md](05-machine-learning-model.md) | LightGBM, two-tier guardrails, SHAP, design rationale & limitations |
 | [06-training-and-tuning.md](06-training-and-tuning.md) | How the ML model is trained, evaluated, and optionally tuned |
 | [07-operations.md](07-operations.md) | Files on disk, drift monitoring, scripts, tests, and limitations |
 
