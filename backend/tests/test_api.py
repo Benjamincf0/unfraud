@@ -104,6 +104,9 @@ tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,
     assert "score_breakdown" in header
     assert "card_baseline_json" in header
     assert "cross_card_signals_json" in header
+    assert "review_decision" in header
+    assert "reviewer_notes" in header
+    assert "reviewed_at" in header
 
 def test_review_endpoints():
     """Test review endpoints"""
@@ -142,11 +145,40 @@ tx_002,2026-04-25T00:01:00,card_001,50.0,Store B,grocery,online,CA,US,dev_123,1.
     )
     assert response.status_code == 200
     assert "escalate" in response.json()["message"]
+
+    response = client.get(f"/review/{file_hash}/audit")
+    assert response.status_code == 200
+    audit = response.json()
+    assert len(audit) == 1
+    assert audit[0]["transaction_id"] == tx_id
+    assert audit[0]["action"] == "escalate"
+    assert audit[0]["reviewed_at"]
+
+    response = client.get(f"/export/{file_hash}")
+    assert response.status_code == 200
+    assert "review_decision" in response.text
+    assert "escalate" in response.text
+
+    response = client.post(
+        f"/review/{file_hash}/{tx_id}/pending",
+        json={"action": "pending"}
+    )
+    assert response.status_code == 200
+
+    response = client.get(f"/review/{file_hash}/audit")
+    assert response.status_code == 200
+    assert response.json() == []
     
     # Test invalid action
     response = client.post(
         f"/review/{file_hash}/{tx_id}/invalid",
         json={"action": "invalid", "reviewer_notes": "Test"}
+    )
+    assert response.status_code == 400
+
+    response = client.post(
+        f"/review/{file_hash}/{tx_id}/approve",
+        json={"action": "dismiss", "reviewer_notes": "Mismatch"}
     )
     assert response.status_code == 400
 
