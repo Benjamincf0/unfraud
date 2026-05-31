@@ -1,3 +1,4 @@
+import type { DualReviewDataResult } from '../lib/scoringViews'
 import type {
   CardAnalysis,
   ReviewLogEntry,
@@ -6,13 +7,7 @@ import type {
   TransactionFlag,
 } from '../types'
 
-export type ReviewDataResult = {
-  allItems: TransactionFlag[]
-  fileHash: string
-  items: TransactionFlag[]
-  source: 'cache' | 'upload'
-  useModel: boolean
-}
+export type ReviewDataResult = DualReviewDataResult
 
 type BackendUploadResponse = {
   file_hash: string
@@ -109,10 +104,7 @@ export async function fetchScoringStatus(): Promise<ScoringStatusResponse> {
   return (await response.json()) as ScoringStatusResponse
 }
 
-export async function uploadTransactionsCsv(
-  file: File,
-  useModel = false,
-): Promise<ReviewDataResult> {
+export async function uploadTransactionsCsv(file: File): Promise<ReviewDataResult> {
   const formData = new FormData()
   formData.append('file', file)
 
@@ -131,21 +123,18 @@ export async function uploadTransactionsCsv(
     throw new Error('Upload returned an invalid file hash')
   }
 
-  const result = await fetchReviewDataByHash(uploadPayload.file_hash, useModel)
+  const result = await fetchReviewDataByHash(uploadPayload.file_hash)
 
   return {
-    allItems: result.allItems,
-    fileHash: uploadPayload.file_hash,
-    items: result.items,
+    ...result,
     source: 'upload',
-    useModel,
   }
 }
 
-export async function fetchReviewDataByHash(
+async function fetchScoringSnapshot(
   fileHash: string,
-  useModel = false,
-): Promise<ReviewDataResult> {
+  useModel: boolean,
+): Promise<{ allItems: TransactionFlag[]; items: TransactionFlag[] }> {
   const exportResponse = await fetch(
     withUseModel(`${apiBaseUrl}/export/${fileHash}`, useModel),
   )
@@ -161,12 +150,36 @@ export async function fetchReviewDataByHash(
     allItems: mapAnalyzedTransactions(analyzedTransactions, {
       suspiciousOnly: false,
     }),
-    fileHash,
     items: mapAnalyzedTransactions(analyzedTransactions, {
       suspiciousOnly: true,
     }),
+  }
+}
+
+export async function fetchReviewDataByHash(
+  fileHash: string,
+): Promise<ReviewDataResult> {
+  const scoringStatus = await fetchScoringStatus()
+  const heuristic = await fetchScoringSnapshot(fileHash, false)
+
+  let model: ReviewDataResult['model'] = null
+
+  if (scoringStatus.ml_model_available) {
+    try {
+      model = await fetchScoringSnapshot(fileHash, true)
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('503')) {
+        throw error
+      }
+    }
+  }
+
+  return {
+    fileHash,
+    heuristic,
+    mlModelAvailable: scoringStatus.ml_model_available,
+    model,
     source: 'cache',
-    useModel,
   }
 }
 

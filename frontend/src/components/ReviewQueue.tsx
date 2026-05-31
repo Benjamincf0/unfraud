@@ -15,6 +15,19 @@ import {
   submitReviewDecision,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
+import {
+  buildTransactionIndex,
+  collectDecisions,
+  defaultRiskTuning,
+  getEffectiveRiskThreshold,
+  getScoreSource,
+  mergeScoringWithDecisions,
+  resolveRiskSortMode,
+  sortTransactionsByScore,
+  type DualReviewDataResult,
+  type RiskSortMode,
+  type RiskTuningByMode,
+} from "../lib/scoringViews";
 import type {
   DecisionAction,
   ReviewDecision,
@@ -29,13 +42,10 @@ type SearchMode = "all" | "single" | "custom";
 
 type ReviewQueueProps = {
   activeFileHash: string;
-  allItems: TransactionFlag[];
-  fileHash: string;
-  items: TransactionFlag[];
   onReset: () => void;
   onSelectSession: (fileHash: string) => void;
+  reviewData: DualReviewDataResult;
   sessions: ReviewSession[];
-  useModel: boolean;
 };
 
 type ReviewSyncVariables = {
@@ -147,20 +157,11 @@ const SEARCH_FIELDS: Array<{
 const SEARCH_FIELD_MAP = new Map(
   SEARCH_FIELDS.map((field) => [field.key, field]),
 );
-const neutralFalsePositiveCost = 5;
-
-function getEffectiveRiskThreshold(
-  riskThreshold: number,
-  falsePositiveCost: number,
-) {
-  return Math.min(
-    95,
-    Math.max(
-      0,
-      riskThreshold + (falsePositiveCost - neutralFalsePositiveCost) * 5,
-    ),
-  );
-}
+const sortModeOptions: Array<{ value: RiskSortMode; label: string }> = [
+  { value: "active", label: "Active scoring" },
+  { value: "heuristic", label: "Heuristic risk" },
+  { value: "model", label: "Model risk" },
+];
 
 function AuditLog({
   entries,
@@ -244,23 +245,25 @@ function formatAuditTime(value: string) {
 
 export function ReviewQueue({
   activeFileHash,
-  allItems,
-  fileHash,
-  items,
   onReset,
   onSelectSession,
+  reviewData,
   sessions,
-  useModel,
 }: ReviewQueueProps) {
+  const fileHash = reviewData.fileHash;
   const queryClient = useQueryClient();
-  const [transactions, setTransactions] = useState(items);
-  const [activeId, setActiveId] = useState(items[0]?.transactionId ?? "");
+  const [useModel, setUseModel] = useState(false);
+  const [sortMode, setSortMode] = useState<RiskSortMode>("active");
+  const [riskTuningByMode, setRiskTuningByMode] =
+    useState<RiskTuningByMode>(defaultRiskTuning);
+  const [transactions, setTransactions] = useState(
+    reviewData.heuristic.items,
+  );
+  const [activeId, setActiveId] = useState(
+    reviewData.heuristic.items[0]?.transactionId ?? "",
+  );
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
-  const [riskThreshold, setRiskThreshold] = useState(0);
-  const [falsePositiveCost, setFalsePositiveCost] = useState(
-    neutralFalsePositiveCost,
-  );
   const [searchMode, setSearchMode] = useState<SearchMode>("all");
   const [singleField, setSingleField] =
     useState<SearchFieldKey>("transaction_id");
@@ -306,9 +309,59 @@ export function ReviewQueue({
     queryFn: () => fetchReviewLog(fileHash),
     queryKey: ["review-log", fileHash],
   });
+  const heuristicIndex = useMemo(
+    () => buildTransactionIndex(reviewData.heuristic.allItems),
+    [reviewData.heuristic.allItems],
+  );
+  const modelIndex = useMemo(
+    () =>
+      reviewData.model
+        ? buildTransactionIndex(reviewData.model.allItems)
+        : new Map<string, TransactionFlag>(),
+    [reviewData.model],
+  );
+  const resolvedSortMode = useMemo(
+    () => resolveRiskSortMode(sortMode, useModel),
+    [sortMode, useModel],
+  );
+  const scoreIndex = useMemo(() => {
+    const source =
+      resolvedSortMode === "model" ? modelIndex : heuristicIndex;
+
+    return new Map(
+      Array.from(source.entries()).map(([transactionId, transaction]) => [
+        transactionId,
+        transaction.score,
+      ]),
+    );
+  }, [heuristicIndex, modelIndex, resolvedSortMode]);
+  const displayIndex = useMemo(
+    () => (useModel && reviewData.model ? modelIndex : heuristicIndex),
+    [heuristicIndex, modelIndex, reviewData.model, useModel],
+  );
+  const activeTuning = riskTuningByMode[sortMode];
   const effectiveRiskThreshold = useMemo(
-    () => getEffectiveRiskThreshold(riskThreshold, falsePositiveCost),
-    [falsePositiveCost, riskThreshold],
+    () =>
+      getEffectiveRiskThreshold(
+        activeTuning.riskThreshold,
+        activeTuning.falsePositiveCost,
+      ),
+    [activeTuning.falsePositiveCost, activeTuning.riskThreshold],
+  );
+  const orderedTransactions = useMemo(
+    () => sortTransactionsByScore(transactions, scoreIndex),
+    [scoreIndex, transactions],
+  );
+  const allItems = useMemo(
+    () =>
+      mergeScoringWithDecisions(
+        reviewData.heuristic.allItems.map(
+          (transaction) =>
+            displayIndex.get(transaction.transactionId) ?? transaction,
+        ),
+        collectDecisions(transactions),
+      ),
+    [displayIndex, reviewData.heuristic.allItems, transactions],
   );
 
   const searchScopeKeys = useMemo(() => {
@@ -328,12 +381,13 @@ export function ReviewQueue({
   const visibleEntries = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return transactions
+    return orderedTransactions
       .map((transaction) => {
         const filterPasses =
           filter === "all" ? true : transaction.decision === filter;
-        const thresholdPasses =
-          transaction.score * 100 >= effectiveRiskThreshold;
+        const thresholdScore =
+          scoreIndex.get(transaction.transactionId) ?? transaction.score;
+        const thresholdPasses = thresholdScore * 100 >= effectiveRiskThreshold;
         const networkPasses = networkFocus
           ? networkFocus.transactionIds.has(transaction.transactionId)
           : true;
@@ -371,9 +425,10 @@ export function ReviewQueue({
     effectiveRiskThreshold,
     filter,
     networkFocus,
+    orderedTransactions,
     query,
+    scoreIndex,
     searchScopeKeys,
-    transactions,
   ]);
 
   const visibleTransactions = useMemo(
@@ -442,24 +497,74 @@ export function ReviewQueue({
 
   const tunedQueueCount = useMemo(
     () =>
-      transactions.filter(
-        (transaction) => transaction.score * 100 >= effectiveRiskThreshold,
-      ).length,
-    [effectiveRiskThreshold, transactions],
+      orderedTransactions.filter((transaction) => {
+        const thresholdScore =
+          scoreIndex.get(transaction.transactionId) ?? transaction.score;
+
+        return thresholdScore * 100 >= effectiveRiskThreshold;
+      }).length,
+    [effectiveRiskThreshold, orderedTransactions, scoreIndex],
+  );
+
+  const applyScoringView = useCallback(
+    (nextUseModel: boolean, decisions: Map<string, ReviewDecision>) => {
+      const scoringSource = getScoreSource(
+        reviewData,
+        nextUseModel ? "model" : "heuristic",
+      );
+
+      if (!scoringSource) {
+        return;
+      }
+
+      setTransactions(
+        mergeScoringWithDecisions(scoringSource.items, decisions),
+      );
+    },
+    [reviewData],
   );
 
   useEffect(() => {
-    setTransactions(items);
-    setActiveId(items[0]?.transactionId ?? "");
+    setUseModel(false);
+    setSortMode("active");
+    setRiskTuningByMode(defaultRiskTuning);
+    setTransactions(reviewData.heuristic.items);
+    setActiveId(reviewData.heuristic.items[0]?.transactionId ?? "");
     setFilter("pending");
-    setRiskThreshold(0);
-    setFalsePositiveCost(neutralFalsePositiveCost);
     setSearchMode("all");
     setSingleField("transaction_id");
     setCustomFields(["transaction_id", "card_id", "merchant_name"]);
     setNetworkFocus(null);
     setHistory([]);
-  }, [fileHash, items]);
+  }, [fileHash, reviewData]);
+
+  useEffect(() => {
+    if (sortMode === "model" && !reviewData.model) {
+      setSortMode("active");
+    }
+  }, [reviewData.model, sortMode]);
+
+  const handleUseModelChange = (nextUseModel: boolean) => {
+    if (nextUseModel && !reviewData.model) {
+      return;
+    }
+
+    setUseModel(nextUseModel);
+    applyScoringView(nextUseModel, collectDecisions(transactions));
+  };
+
+  const updateRiskTuning = (
+    mode: RiskSortMode,
+    patch: Partial<RiskTuningByMode[RiskSortMode]>,
+  ) => {
+    setRiskTuningByMode((current) => ({
+      ...current,
+      [mode]: {
+        ...current[mode],
+        ...patch,
+      },
+    }));
+  };
 
   const focusRelatedTransactions = useCallback(
     ({
@@ -713,9 +818,23 @@ export function ReviewQueue({
             {reviewSyncFailed ? (
               <span title={reviewSyncError?.message}>Sync failed</span>
             ) : null}
-            <span>{useModel ? "ML model" : "Rules model"}</span>
+            <span>{useModel ? "ML model" : "Heuristic"}</span>
+            <span>
+              Sort:{" "}
+              {sortModeOptions.find((option) => option.value === sortMode)?.label}
+            </span>
           </div>
           <div className="topbar-actions">
+            <label className="scoring-toggle">
+              <span>Heuristic</span>
+              <input
+                checked={useModel}
+                disabled={!reviewData.mlModelAvailable || !reviewData.model}
+                onChange={(event) => handleUseModelChange(event.target.checked)}
+                type="checkbox"
+              />
+              <span>ML model</span>
+            </label>
             {sessions.length > 1 ? (
               <select
                 aria-label="Switch result set"
@@ -725,8 +844,7 @@ export function ReviewQueue({
               >
                 {sessions.map((session) => (
                   <option key={session.fileHash} value={session.fileHash}>
-                    {session.label} - {session.useModel ? "ML" : "Rules"} -{" "}
-                    {session.fileHash.slice(0, 8)}
+                    {session.label} - {session.fileHash.slice(0, 8)}
                   </option>
                 ))}
               </select>
@@ -847,16 +965,22 @@ export function ReviewQueue({
 
           <div className="tuning-controls" aria-label="Queue tuning controls">
             <label className="tuning-control">
-              <span>Risk threshold</span>
+              <span>
+                Risk threshold (
+                {sortModeOptions.find((option) => option.value === sortMode)?.label}
+                )
+              </span>
               <Slider
                 aria-label="Risk threshold"
                 max={95}
                 min={0}
                 onChange={(event) =>
-                  setRiskThreshold(Number(event.target.value))
+                  updateRiskTuning(sortMode, {
+                    riskThreshold: Number(event.target.value),
+                  })
                 }
                 step={5}
-                value={riskThreshold}
+                value={activeTuning.riskThreshold}
               />
               <strong>{Math.round(effectiveRiskThreshold)}%</strong>
             </label>
@@ -867,12 +991,14 @@ export function ReviewQueue({
                 max={9}
                 min={1}
                 onChange={(event) =>
-                  setFalsePositiveCost(Number(event.target.value))
+                  updateRiskTuning(sortMode, {
+                    falsePositiveCost: Number(event.target.value),
+                  })
                 }
                 step={1}
-                value={falsePositiveCost}
+                value={activeTuning.falsePositiveCost}
               />
-              <strong>{falsePositiveCost}</strong>
+              <strong>{activeTuning.falsePositiveCost}</strong>
             </label>
           </div>
 
@@ -914,7 +1040,11 @@ export function ReviewQueue({
             activeTransactionId={activeTransaction?.transactionId}
             matchFieldsByTransactionId={matchFieldsByTransactionId}
             onSelect={setActiveId}
+            onSortModeChange={setSortMode}
             searchQuery={query}
+            sortMode={sortMode}
+            sortModeOptions={sortModeOptions}
+            sortModeDisabled={!reviewData.model}
             transactions={visibleTransactions}
           />
 

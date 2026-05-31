@@ -1,11 +1,16 @@
 import { formatCurrency } from '../../lib/utils'
+import type { RiskSortMode } from '../../lib/scoringViews'
 import type { TransactionFlag } from '../../types'
 
 type QueueListProps = {
   activeTransactionId?: string
   matchFieldsByTransactionId?: Map<string, string[]>
   onSelect: (transactionId: string) => void
+  onSortModeChange: (mode: RiskSortMode) => void
   searchQuery?: string
+  sortMode: RiskSortMode
+  sortModeDisabled?: boolean
+  sortModeOptions: Array<{ value: RiskSortMode; label: string }>
   transactions: TransactionFlag[]
 }
 
@@ -13,11 +18,38 @@ export function QueueList({
   activeTransactionId,
   matchFieldsByTransactionId,
   onSelect,
+  onSortModeChange,
   searchQuery,
+  sortMode,
+  sortModeDisabled = false,
+  sortModeOptions,
   transactions,
 }: QueueListProps) {
   return (
     <section className="queue-list" aria-label="Transaction queue">
+      <div className="queue-list-toolbar">
+        <label className="queue-sort-control" htmlFor="queue-sort-mode">
+          <span>Order by</span>
+          <select
+            disabled={sortModeDisabled}
+            id="queue-sort-mode"
+            onChange={(event) =>
+              onSortModeChange(event.target.value as RiskSortMode)
+            }
+            value={sortMode}
+          >
+            {sortModeOptions.map((option) => (
+              <option
+                disabled={option.value === 'model' && sortModeDisabled}
+                key={option.value}
+                value={option.value}
+              >
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       <div className="queue-list-body">
         {transactions.length === 0 ? (
           <p className="empty-copy">No transactions match the current view.</p>
