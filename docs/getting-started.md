@@ -1,10 +1,10 @@
-# Getting started — using Fraud Hunter
+# Getting started — using Unfraudify
 
 This guide is for **reviewers and new users**. No programming knowledge required.
 
 ## What you need
 
-- The Fraud Hunter app running locally (see [Run the app](#run-the-app) below).
+- The Unfraudify app running locally (see [Run the app](#run-the-app) below).
 - A transaction CSV file. The challenge provides `transactions.csv` with 1,000 payments.
 
 ## Run the app

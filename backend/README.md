@@ -1,6 +1,6 @@
 # Fraud Detection Backend
 
-FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, support human review, and export enriched results.
+FastAPI service for Unfraudify: upload transaction CSVs, score fraud risk, support human review, and export enriched results.
 
 ## Documentation (start here)
 

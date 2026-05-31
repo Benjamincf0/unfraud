@@ -1,6 +1,6 @@
-# Fraud Hunter — documentation
+# Unfraudify — documentation
 
-Fraud Hunter is a **fraud triage tool**: it reads a batch of card transactions, flags the ones that look suspicious, explains why each flag fired, and gives a human reviewer a fast queue to approve, dismiss, or escalate each alert.
+Unfraudify is a **fraud triage tool**: it reads a batch of card transactions, flags the ones that look suspicious, explains why each flag fired, and gives a human reviewer a fast queue to approve, dismiss, or escalate each alert.
 
 This folder is the main entry point for **everyone** — reviewers, product owners, and engineers. You do not need to read source code to use the app.
 
@@ -17,7 +17,7 @@ This folder is the main entry point for **everyone** — reviewers, product owne
 
 Imagine you work on a payments team. Every day thousands of charges go through, and a small fraction are fraudulent — stolen cards, account takeovers, merchant scams. You cannot inspect every payment by hand, and you cannot block everything that looks slightly unusual without angering real customers.
 
-Fraud Hunter helps by:
+Unfraudify helps by:
 
 1. **Ingesting** a CSV file of transactions (the challenge dataset has 1,000 rows across 50 cards).
 2. **Scoring** each transaction for fraud risk (0 = safe, 1 = very suspicious).

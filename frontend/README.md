@@ -1,6 +1,6 @@
-# Fraud Hunter Frontend
+# Unfraudify Frontend
 
-React + Vite reviewer UI for Fraud Hunter. The frontend uploads a transaction CSV to the backend, loads flagged transactions from paginated analysis endpoints, and runs a keyboard-driven human review workflow.
+React + Vite reviewer UI for Unfraudify. The frontend uploads a transaction CSV to the backend, loads flagged transactions from paginated analysis endpoints, and runs a keyboard-driven human review workflow.
 
 **User guide:** [../docs/getting-started.md](../docs/getting-started.md)  
 **Architecture (frontend ↔ backend):** [../docs/architecture.md](../docs/architecture.md)

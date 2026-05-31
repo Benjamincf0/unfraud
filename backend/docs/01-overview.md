@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Fraud Hunter helps a **human reviewer** work through suspicious card transactions efficiently. The backend does not replace the reviewer; it **prioritizes** which transactions deserve attention and **explains** why each one looks risky.
+Unfraudify helps a **human reviewer** work through suspicious card transactions efficiently. The backend does not replace the reviewer; it **prioritizes** which transactions deserve attention and **explains** why each one looks risky.
 
 Think of it as a triage nurse: it does not diagnose every case, but it sorts patients so the doctor sees the urgent ones first and has notes on symptoms.
 

@@ -1,10 +1,10 @@
-# Architecture — how Fraud Hunter works
+# Architecture — how Unfraudify works
 
 This document explains how the **React frontend** and **FastAPI backend** fit together. It is written for new contributors and technical readers who want the big picture before diving into code.
 
 ## System overview
 
-Fraud Hunter is a **client–server** app:
+Unfraudify is a **client–server** app:
 
 ```mermaid
 flowchart TB

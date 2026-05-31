@@ -1,4 +1,4 @@
-# Fraud Hunter
+# Unfraudify
 
 **A 24-hour code challenge for MCP Hacks, sponsored by Valsoft.**
 
