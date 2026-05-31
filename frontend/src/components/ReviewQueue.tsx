@@ -516,6 +516,38 @@ export function ReviewQueue({
     [transactions],
   );
 
+  const filterByCardCountry = useCallback(
+    ({ cardId, country }: { cardId: string; country: string }) => {
+      const normalizedCountry = country.trim().toUpperCase();
+
+      if (!cardId || !normalizedCountry) {
+        return;
+      }
+
+      const matchingTransactions = transactions.filter(
+        (transaction) =>
+          transaction.cardId === cardId &&
+          transaction.merchantCountry.trim().toUpperCase() === normalizedCountry,
+      );
+      const transactionIds = new Set(
+        matchingTransactions.map((transaction) => transaction.transactionId),
+      );
+
+      setFilter("all");
+      setQuery("");
+      setNetworkFocus({
+        label: `${cardId} in ${normalizedCountry}`,
+        transactionIds,
+      });
+      setSearchMode("all");
+
+      if (matchingTransactions[0]) {
+        setActiveId(matchingTransactions[0].transactionId);
+      }
+    },
+    [transactions],
+  );
+
   const toggleCustomField = (key: SearchFieldKey) => {
     setCustomFields((current) =>
       current.includes(key)
@@ -896,6 +928,7 @@ export function ReviewQueue({
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
               onDecide={decide}
+              onFilterCardCountry={filterByCardCountry}
               onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
