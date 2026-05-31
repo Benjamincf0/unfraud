@@ -291,10 +291,6 @@ def _optional_text(value: Any) -> Optional[str]:
     return text or None
 
 
-def _is_flagged_row(row: pd.Series) -> bool:
-    return bool(row.get("is_fraud")) or float(row.get("fraud_score", 0)) > 0
-
-
 def _queue_dataframe(
     file_hash: str,
     use_model: bool = False,

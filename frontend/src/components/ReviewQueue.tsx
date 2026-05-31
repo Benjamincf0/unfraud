@@ -372,7 +372,7 @@ export function ReviewQueue({
   }, [bootstrapQuery.data]);
 
   useEffect(() => {
-    if (!activeId) {
+    if (!activeId || enrichedIdsRef.current.has(activeId)) {
       return;
     }
 
@@ -380,21 +380,20 @@ export function ReviewQueue({
 
     async function loadActiveTransaction() {
       try {
-        if (!heuristicById.has(activeId)) {
-          const heuristicPage = await fetchReviewQueuePage(fileHash, {
-            flaggedOnly: false,
-            transactionId: activeId,
-            useModel: false,
-          });
-          if (cancelled) {
-            return;
-          }
-          setHeuristicById((current) =>
-            mergeTransactionMaps(current, heuristicPage.items),
-          );
+        const heuristicPage = await fetchReviewQueuePage(fileHash, {
+          flaggedOnly: false,
+          transactionId: activeId,
+          useModel: false,
+        });
+        if (cancelled) {
+          return;
         }
+        setHeuristicById((current) =>
+          mergeTransactionMaps(current, heuristicPage.items),
+        );
 
-        if (summary.mlModelAvailable && !modelById.has(activeId)) {
+        let modelItem: TransactionFlag | undefined;
+        if (summary.mlModelAvailable) {
           const modelPage = await fetchReviewQueuePage(fileHash, {
             flaggedOnly: false,
             transactionId: activeId,
@@ -403,6 +402,7 @@ export function ReviewQueue({
           if (cancelled) {
             return;
           }
+          modelItem = modelPage.items[0];
           setModelById((current) =>
             mergeTransactionMaps(current, modelPage.items),
           );
@@ -413,8 +413,10 @@ export function ReviewQueue({
           return;
         }
 
+        const heuristicItem = heuristicPage.items[0];
+
         setHeuristicById((current) => {
-          const existing = current.get(activeId);
+          const existing = current.get(activeId) ?? heuristicItem;
           if (!existing) {
             return current;
           }
@@ -433,12 +435,7 @@ export function ReviewQueue({
 
         if (detail.model) {
           setModelById((current) => {
-            const existing =
-              current.get(activeId) ??
-              heuristicById.get(activeId) ??
-              bootstrapQuery.data?.heuristic.find(
-                (item) => item.transactionId === activeId,
-              );
+            const existing = current.get(activeId) ?? modelItem ?? heuristicItem;
             if (!existing) {
               return current;
             }
@@ -482,6 +479,8 @@ export function ReviewQueue({
             );
           }
         }
+
+        enrichedIdsRef.current.add(activeId);
       } catch {
         // Keep the queue row visible even if detail enrichment fails.
       }
@@ -492,14 +491,7 @@ export function ReviewQueue({
     return () => {
       cancelled = true;
     };
-  }, [
-    activeId,
-    bootstrapQuery.data,
-    fileHash,
-    heuristicById,
-    modelById,
-    summary.mlModelAvailable,
-  ]);
+  }, [activeId, fileHash, summary.mlModelAvailable]);
 
   const flaggedTransactions = useMemo(
     () =>
@@ -698,7 +690,7 @@ export function ReviewQueue({
   const totalScoredCount = summary.totalTransactions;
   const queuedCount = summary.flaggedCount;
   const notQueuedCount = Math.max(0, totalScoredCount - queuedCount);
-  const reviewedCount = queueStats.pending;
+  const reviewedCount = transactions.length - queueStats.pending;
   const scorerLabel = useModel ? "ML model" : "Heuristic";
   const hasMoreFlagged = loadedQueueCount < summary.flaggedCount;
 
@@ -931,13 +923,7 @@ export function ReviewQueue({
         transactionId,
       };
 
-      setTransactions((current) =>
-        current.map((item) =>
-          item.transactionId === transactionId
-            ? { ...item, decision: nextDecision }
-            : item,
-        ),
-      );
+      updateDecision(transactionId, nextDecision);
       setHistory((previous) => [action, ...previous]);
       setActiveId(nextActiveTransaction?.transactionId ?? "");
       syncReviewDecision({
@@ -951,7 +937,7 @@ export function ReviewQueue({
         transactionId,
       });
     },
-    [fileHash, syncReviewDecision, transactions, visibleTransactions],
+    [fileHash, syncReviewDecision, transactions, updateDecision, visibleTransactions],
   );
 
   const undo = useCallback(() => {
@@ -961,13 +947,7 @@ export function ReviewQueue({
       return;
     }
 
-    setTransactions((current) =>
-      current.map((transaction) =>
-        transaction.transactionId === lastAction.transactionId
-          ? { ...transaction, decision: lastAction.previousDecision }
-          : transaction,
-      ),
-    );
+    updateDecision(lastAction.transactionId, lastAction.previousDecision);
     setHistory(rest);
     setActiveId(lastAction.transactionId);
     syncReviewDecision({
@@ -977,7 +957,7 @@ export function ReviewQueue({
       rollbackHistory: (current) => [lastAction, ...current],
       transactionId: lastAction.transactionId,
     });
-  }, [fileHash, history, syncReviewDecision]);
+  }, [fileHash, history, syncReviewDecision, updateDecision]);
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
@@ -1046,6 +1026,33 @@ export function ReviewQueue({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeTransaction, decide, moveActive, undo]);
+
+  if (bootstrapQuery.isLoading && heuristicById.size === 0) {
+    return (
+      <div className="app-shell review-shell">
+        <main className="workspace">
+          <p className="empty-copy">Loading review queue…</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (bootstrapQuery.isError && heuristicById.size === 0) {
+    return (
+      <div className="app-shell review-shell">
+        <main className="workspace">
+          <p className="empty-copy" role="alert">
+            {bootstrapQuery.error instanceof Error
+              ? bootstrapQuery.error.message
+              : "Could not load review queue."}
+          </p>
+          <Button onClick={onReset} size="sm" variant="outline">
+            Upload CSV
+          </Button>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell review-shell">
@@ -1196,6 +1203,16 @@ export function ReviewQueue({
             <Button onClick={onReset} size="sm" variant="outline">
               Upload CSV
             </Button>
+            {hasMoreFlagged ? (
+              <Button
+                disabled={isLoadingMore || bootstrapQuery.isFetching}
+                onClick={() => void loadMoreFlagged()}
+                size="sm"
+                variant="outline"
+              >
+                {isLoadingMore ? "Loading…" : "Load more flagged"}
+              </Button>
+            ) : null}
           </div>
         </header>
 
@@ -1264,7 +1281,7 @@ export function ReviewQueue({
                 <input
                   checked={useModel}
                   className="scoring-switch-input"
-                  disabled={!reviewData.mlModelAvailable || !reviewData.model}
+                  disabled={!summary.mlModelAvailable}
                   onChange={(event) =>
                     handleUseModelChange(event.target.checked)
                   }
@@ -1328,7 +1345,7 @@ export function ReviewQueue({
             searchQuery={query}
             sortMode={sortMode}
             sortModeOptions={sortModeOptions}
-            sortModeDisabled={!reviewData.model}
+            sortModeDisabled={!summary.mlModelAvailable}
             transactions={visibleTransactions}
           />
 
@@ -1347,7 +1364,7 @@ export function ReviewQueue({
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
-              transactions={allItems}
+              transactions={networkTransactions}
               transaction={activeTransaction}
             />
           ) : (
