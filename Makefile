@@ -1,4 +1,4 @@
-.PHONY: build dev export test
+.PHONY: build dev export export-ml score-ml test
 
 dev:
 	./scripts/dev.sh
@@ -12,3 +12,9 @@ build:
 
 export:
 	cd backend && uv run python export_challenge_csv.py
+
+score-ml:
+	cd backend && uv run python -m scripts.score_transactions ../transactions.csv
+
+export-ml:
+	cd backend && uv run python -m scripts.score_transactions ../transactions.csv -o ../ml_analyzed_transactions.csv

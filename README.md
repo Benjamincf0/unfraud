@@ -38,7 +38,23 @@ Runs the backend pytest suite and builds the frontend.
 make export
 ```
 
-The committed `analyzed_transactions.csv` is the current heuristic detector output for the challenge dataset. It preserves the original transaction fields and adds fraud scores, reasons, explainability JSON, card/cross-card feature columns, and review handoff columns.
+The committed `analyzed_transactions.csv` is the current heuristic detector output for the challenge dataset.
+
+## Score with the trained ML model
+
+After training (`cd backend && uv run python -m scripts.train_fraud_model`):
+
+```bash
+make score-ml
+```
+
+Prints how many of the 1,000 challenge rows the hybrid LightGBM + guardrail detector flags. To also write an enriched CSV:
+
+```bash
+make export-ml
+```
+
+Creates `ml_analyzed_transactions.csv` at the repo root. It preserves the original transaction fields and adds fraud scores, reasons, explainability JSON, card/cross-card feature columns, and review handoff columns.
 
 ## Documentation
 

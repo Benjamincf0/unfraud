@@ -94,3 +94,19 @@ make export
 ```
 
 Uses the **heuristic** scorer on `transactions.csv`.
+
+## Score challenge CSV with ML
+
+Requires `algo/ops/fraud_model.pkl` (see training above).
+
+```bash
+make score-ml    # print flag counts for transactions.csv
+make export-ml   # same + write ml_analyzed_transactions.csv
+```
+
+Or manually:
+
+```bash
+cd backend
+uv run python -m scripts.score_transactions ../transactions.csv --list-flagged
+```

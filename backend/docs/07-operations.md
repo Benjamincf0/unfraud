@@ -34,6 +34,7 @@ Dependencies are managed with **uv** (`pyproject.toml`, `uv.lock`). Python 3.14+
 | `algo/ops/drift_metrics.json` | Weekly PR-AUC history |
 | `algo/ops/best_lgbm_params.json` | Optional tuned hyperparameters |
 | `scripts/train_fraud_model.py` | CLI to train and save model |
+| `scripts/score_transactions.py` | Offline ML scoring + flag summary for challenge CSV |
 | `export_challenge_csv.py` | Offline heuristic export for challenge |
 | `tests/` | Automated tests (API, scorers, algo) |
 
@@ -54,6 +55,7 @@ See [../docs/architecture.md](../docs/architecture.md). Key paths:
 | `convert_dataset_script.py` | Dataset format conversions (training prep) |
 | `split_csv.py` | Split large CSVs |
 | `export_challenge_csv.py` | Write root `analyzed_transactions.csv` |
+| `scripts/score_transactions.py` | Score CSV with ML; `make score-ml` / `make export-ml` |
 
 ## Testing
 
