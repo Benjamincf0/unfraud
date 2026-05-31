@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
 import {
@@ -16,6 +16,7 @@ import {
 } from './lib/reviewSessions'
 
 function App() {
+  const queryClient = useQueryClient()
   const [session, setSession] = useState<ReviewSessionData | null>(null)
   const [sessions, setSessions] = useState(loadReviewSessions)
   const [activeFileHash, setActiveFileHash] = useState<string | null>(
@@ -33,6 +34,7 @@ function App() {
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadTransactionsCsv(file),
     onSuccess: (data, file) => {
+      queryClient.removeQueries({ queryKey: ['review-session', data.fileHash] })
       setSessions(
         saveReviewSession({
           fileHash: data.fileHash,
@@ -63,31 +65,46 @@ function App() {
 
   const showUploadScreen = useCallback(() => {
     clearActiveReviewSession()
+    queryClient.removeQueries({ queryKey: ['review-session'] })
     setSession(null)
     setActiveFileHash(null)
     setIsUploadMode(true)
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
+    if (session?.fileHash === activeFileHash) {
+      return
+    }
+
+    if (!activeFileHash || !sessionQuery.isError || sessionQuery.isFetching) {
+      return
+    }
+
     const errorMessage =
       sessionQuery.error instanceof Error ? sessionQuery.error.message : ''
-    const missingSession =
-      activeFileHash &&
-      errorMessage.toLowerCase().includes('file not found')
 
-    if (missingSession) {
+    if (errorMessage.toLowerCase().includes('file not found')) {
       showUploadScreen()
     }
-  }, [activeFileHash, sessionQuery.error, showUploadScreen])
+  }, [
+    activeFileHash,
+    session?.fileHash,
+    sessionQuery.error,
+    sessionQuery.isError,
+    sessionQuery.isFetching,
+    showUploadScreen,
+  ])
 
   if (!activeSession) {
     return (
       <UploadCsv
         error={
-          sessionQuery.error instanceof Error
-            ? sessionQuery.error.message
-            : uploadMutation.error instanceof Error
+          uploadMutation.error instanceof Error
             ? uploadMutation.error.message
+            : isUploadMode || session?.fileHash === activeFileHash
+            ? null
+            : sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
             : null
         }
         isUploading={uploadMutation.isPending || sessionQuery.isFetching}
