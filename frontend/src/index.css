@@ -1730,3 +1730,94 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+.review-status-ml-breakdown {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  margin: 0.35rem 0 0;
+}
+
+.scoring-breakdown {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+.scoring-breakdown h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.scoring-breakdown-grid {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.scoring-breakdown-grid dt {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.scoring-breakdown-grid dd {
+  font-size: 0.8125rem;
+  margin: 0.1rem 0 0;
+}
+
+.scoring-breakdown-sub {
+  color: var(--color-text-muted);
+}
+
+.scoring-breakdown-note {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  margin: 0.65rem 0 0;
+}
+
+.queue-cause-tabs {
+  margin-top: 0.35rem;
+}
+
+.queue-item-tier-queued {
+  border-left: 3px solid var(--color-danger);
+}
+
+.queue-item-tier-elevated {
+  border-left: 3px solid var(--color-warning);
+}
+
+.queue-item-tier-low {
+  border-left: 3px solid transparent;
+}
+
+.queue-item-meta-scores {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.queue-item-badge {
+  background: #2a2a33;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  padding: 0.1rem 0.35rem;
+  white-space: nowrap;
+}
+
+.queue-item-badge-muted {
+  color: var(--color-text-muted);
+}
+
+.queue-explorer-loading {
+  grid-column: 1;
+  padding: 1rem;
+}

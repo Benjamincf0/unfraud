@@ -5,6 +5,7 @@ import type {
 } from '../lib/scoringViews'
 import { emptyFlaggedQueueStats } from '../lib/scoringViews'
 import { QUEUE_FETCH_PAGE_SIZE } from '../lib/scoringViews'
+import { mlScoringFromBackend } from '../lib/mlScoring'
 import type {
   CardAnalysis,
   ReviewLogEntry,
@@ -35,6 +36,11 @@ type BackendSummaryResponse = {
   ml_model_available: boolean
   flagged_queue_stats?: BackendFlaggedQueueStats
   model_flagged_queue_stats?: BackendFlaggedQueueStats
+  model_threshold?: number | null
+  model_only_count?: number
+  alert_only_count?: number
+  model_alert_both_count?: number
+  soft_rule_only_count?: number
 }
 
 type BackendQueuePageResponse = {
@@ -63,6 +69,10 @@ type BackendQueueItem = {
   reviewed_at?: string | null
   reviewer_notes?: string | null
   card_baseline?: BackendCardBaseline
+  model_score?: number | null
+  flagged_by_model?: boolean | null
+  flagged_by_alert?: boolean | null
+  rule_guardrail?: boolean | null
 }
 
 type BackendScorerDetail = {
@@ -73,6 +83,11 @@ type BackendScorerDetail = {
   card_baseline?: BackendCardBaseline
   cross_card_signals?: Record<string, unknown>
   graph_features?: Record<string, number>
+  model_score?: number | null
+  model_threshold?: number | null
+  flagged_by_model?: boolean | null
+  flagged_by_alert?: boolean | null
+  rule_guardrail?: boolean | null
 }
 
 type BackendTransactionDetailResponse = BackendQueueItem & {
@@ -233,6 +248,11 @@ export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummar
       payload.model_flagged_queue_stats,
       payload.model_flagged_count ?? 0,
     ),
+    modelThreshold: payload.model_threshold ?? null,
+    modelOnlyCount: payload.model_only_count ?? 0,
+    alertOnlyCount: payload.alert_only_count ?? 0,
+    modelAlertBothCount: payload.model_alert_both_count ?? 0,
+    softRuleOnlyCount: payload.soft_rule_only_count ?? 0,
   }
 }
 
@@ -280,16 +300,19 @@ export async function fetchReviewQueuePage(
 export async function fetchAllReviewQueue(
   fileHash: string,
   {
+    flaggedOnly = true,
     onChunk,
     onProgress,
     useModel = false,
   }: {
+    flaggedOnly?: boolean
     onChunk?: (items: TransactionFlag[]) => void
     onProgress?: (loaded: number, total: number) => void
     useModel?: boolean
   } = {},
 ): Promise<TransactionFlag[]> {
   const firstPage = await fetchReviewQueuePage(fileHash, {
+    flaggedOnly,
     limit: QUEUE_FETCH_PAGE_SIZE,
     offset: 0,
     slim: true,
@@ -303,6 +326,7 @@ export async function fetchAllReviewQueue(
   let offset = items.length
   while (offset < firstPage.total) {
     const page = await fetchReviewQueuePage(fileHash, {
+      flaggedOnly,
       limit: QUEUE_FETCH_PAGE_SIZE,
       offset,
       slim: true,
@@ -561,7 +585,7 @@ export async function fetchCardAnalysis({
 }
 
 export function mapQueueItemToTransactionFlag(item: BackendQueueItem): TransactionFlag {
-  return toTransactionFlag(
+  const flag = toTransactionFlag(
     item,
     {
       fraud_score: item.fraud_score,
@@ -576,6 +600,8 @@ export function mapQueueItemToTransactionFlag(item: BackendQueueItem): Transacti
     emptyToUndefined(item.reviewed_at ?? undefined),
     emptyToUndefined(item.reviewer_notes ?? undefined),
   )
+  const mlScoring = mlScoringFromBackend(item)
+  return mlScoring ? { ...flag, mlScoring } : flag
 }
 
 export function applyScorerDetailToTransaction(
@@ -583,11 +609,13 @@ export function applyScorerDetailToTransaction(
   detail: BackendScorerDetail,
   transactionId: string,
 ): TransactionFlag {
+  const mlScoring = mlScoringFromBackend(detail)
   return {
     ...transaction,
     score: detail.fraud_score,
     label: getRiskLabel(detail.fraud_score),
     isFraud: detail.is_fraud,
+    mlScoring: mlScoring ?? transaction.mlScoring,
     reasons: buildReasons({
       fraud_score: detail.fraud_score,
       is_fraud: detail.is_fraud,
@@ -614,6 +642,26 @@ export function applyScorerDetailToTransaction(
         }
       : transaction.cardContext,
   }
+}
+
+export async function fetchExplorerDataset(
+  fileHash: string,
+  {
+    onChunk,
+    onProgress,
+    useModel = false,
+  }: {
+    onChunk?: (items: TransactionFlag[]) => void
+    onProgress?: (loaded: number, total: number) => void
+    useModel?: boolean
+  } = {},
+): Promise<TransactionFlag[]> {
+  return fetchAllReviewQueue(fileHash, {
+    flaggedOnly: false,
+    onChunk,
+    onProgress,
+    useModel,
+  })
 }
 
 function toCardAnalysis(

@@ -23,6 +23,11 @@ export type ReviewSummary = {
   mlModelAvailable: boolean
   flaggedQueueStats: FlaggedQueueStats
   modelFlaggedQueueStats: FlaggedQueueStats
+  modelThreshold: number | null
+  modelOnlyCount: number
+  alertOnlyCount: number
+  modelAlertBothCount: number
+  softRuleOnlyCount: number
 }
 
 export type ReviewSessionData = {

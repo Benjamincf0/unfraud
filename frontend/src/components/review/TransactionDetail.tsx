@@ -1,5 +1,6 @@
 import { CardAnalysisPanel } from './CardAnalysisPanel'
 import { CrossCardNetworkPanel } from './CrossCardNetworkPanel'
+import { ScoringBreakdown } from './ScoringBreakdown'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { getFeedbackReasonCode } from '../../lib/reviewFeedback'
@@ -35,9 +36,11 @@ type TransactionDetailProps = {
     transactionIds: string[]
   }) => void
   onSelectTransaction: (transactionId: string) => void
+  modelThreshold: number | null
   reviewableTransactionIds: Set<string>
   transactions: TransactionFlag[]
   transaction: TransactionFlag
+  useModel: boolean
 }
 
 export function TransactionDetail({
@@ -53,9 +56,11 @@ export function TransactionDetail({
   onFilterByField,
   onFocusRelatedTransactions,
   onSelectTransaction,
+  modelThreshold,
   reviewableTransactionIds,
   transactions,
   transaction,
+  useModel,
 }: TransactionDetailProps) {
   const toggleReasonCode = (reasonCode: string) => {
     const selected = decisionFeedback.reasonCodes.includes(reasonCode)
@@ -196,6 +201,12 @@ export function TransactionDetail({
             </dd>
           </div>
         </dl>
+
+        <ScoringBreakdown
+          modelThreshold={modelThreshold}
+          transaction={transaction}
+          useModel={useModel}
+        />
 
         <section
           aria-busy={isReasonsLoading}
