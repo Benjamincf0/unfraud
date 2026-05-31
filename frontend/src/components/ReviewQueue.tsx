@@ -992,18 +992,44 @@ export function ReviewQueue({
                 <strong>{activeTuning.falsePositiveCost}</strong>
               </label>
             </div>
-            <label className="scoring-toggle">
-              <span>Heuristic</span>
-              <input
-                checked={useModel}
-                disabled={!reviewData.mlModelAvailable || !reviewData.model}
-                onChange={(event) =>
-                  handleUseModelChange(event.target.checked)
+            <div
+              aria-label="Scoring engine"
+              className="scoring-toggle"
+              role="group"
+            >
+              <span
+                className={
+                  useModel
+                    ? "scoring-toggle-label"
+                    : "scoring-toggle-label scoring-toggle-label-active"
                 }
-                type="checkbox"
-              />
-              <span>ML model</span>
-            </label>
+              >
+                Heuristic
+              </span>
+              <label className="scoring-switch">
+                <input
+                  checked={useModel}
+                  className="scoring-switch-input"
+                  disabled={!reviewData.mlModelAvailable || !reviewData.model}
+                  onChange={(event) =>
+                    handleUseModelChange(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span className="scoring-switch-track">
+                  <span className="scoring-switch-thumb" />
+                </span>
+              </label>
+              <span
+                className={
+                  useModel
+                    ? "scoring-toggle-label scoring-toggle-label-active"
+                    : "scoring-toggle-label"
+                }
+              >
+                ML model
+              </span>
+            </div>
           </div>
 
           {searchMode === "custom" ? (
