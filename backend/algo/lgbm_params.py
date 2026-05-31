@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 OPS_DIR = Path(__file__).resolve().parent / "ops"
 DEFAULT_BEST_PARAMS_PATH = OPS_DIR / "best_lgbm_params.json"
 DEFAULT_OPTUNA_DB_PATH = OPS_DIR / "optuna.db"
 
-# Tunable knobs (scale_pos_weight is always derived from y_tr in train_model).
+# Tunable knobs (scale_pos_weight is swept offline in tune_lgbm; pipeline uses natural weight).
 DEFAULT_LGBM_PARAMS: Dict[str, Any] = {
     "n_estimators": 600,
     "learning_rate": 0.03,
@@ -26,6 +28,13 @@ DEFAULT_LGBM_PARAMS: Dict[str, Any] = {
 
 # Set by train_model / pipeline integration — not passed to LGBMClassifier.
 TRAIN_ONLY_KEYS = frozenset({"scale_pos_weight", "objective", "n_jobs", "random_state"})
+
+
+def natural_scale_pos_weight(y) -> float:
+    """Inverse class frequency: neg / pos (same as LightGBM ``is_unbalance=True``)."""
+    pos = int(np.asarray(y).sum())
+    neg = len(y) - pos
+    return neg / max(pos, 1)
 
 
 def merge_lgbm_params(

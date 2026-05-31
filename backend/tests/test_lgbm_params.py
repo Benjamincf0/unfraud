@@ -6,12 +6,20 @@ import tempfile
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import numpy as np
+
 from algo.lgbm_params import (
     DEFAULT_LGBM_PARAMS,
     load_lgbm_params,
     merge_lgbm_params,
+    natural_scale_pos_weight,
     save_best_params,
 )
+
+
+def test_natural_scale_pos_weight():
+    y = np.array([0, 0, 0, 1])
+    assert natural_scale_pos_weight(y) == 3.0
 
 
 def test_merge_lgbm_params_ignores_train_only_keys():

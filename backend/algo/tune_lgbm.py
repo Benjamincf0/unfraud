@@ -2,6 +2,8 @@
 Offline LightGBM hyperparameter search with Optuna (not used by FraudDetectionPipeline).
 
 Optimizes validation PR-AUC under the same temporal split as ``algo.temporal_split``.
+Also sweeps ``scale_pos_weight`` from 1 up to neg/pos (log scale) so trials can find
+a less aggressive imbalance weight than full inverse frequency.
 Writes ``ops/best_lgbm_params.json``; optional SQLite study DB for resume.
 
 Run from ``backend/``:
@@ -44,6 +46,7 @@ from algo.lgbm_params import (
     DEFAULT_BEST_PARAMS_PATH,
     DEFAULT_OPTUNA_DB_PATH,
     merge_lgbm_params,
+    natural_scale_pos_weight,
     save_best_params,
 )
 
@@ -89,6 +92,16 @@ def suggest_lgbm_params(trial: optuna.Trial) -> Dict[str, Any]:
     }
 
 
+def suggest_scale_pos_weight(trial: optuna.Trial, y_tr) -> float:
+    """Sweep pos weight from 1 up to inverse frequency (log scale).
+
+    Equivalent to tuning ``is_unbalance`` strength; we use explicit weights so
+    Optuna can pick values below the full ~173 ratio when recall is over-weighted.
+    """
+    natural = natural_scale_pos_weight(y_tr)
+    return trial.suggest_float("scale_pos_weight", 1.0, max(natural, 1.0), log=True)
+
+
 def run_study(
     X_tr,
     y_tr,
@@ -102,7 +115,8 @@ def run_study(
 ) -> optuna.Study:
     def objective(trial: optuna.Trial) -> float:
         params = suggest_lgbm_params(trial)
-        model = train_model(X_tr, y_tr, params=params)
+        spw = suggest_scale_pos_weight(trial, y_tr)
+        model = train_model(X_tr, y_tr, params=params, scale_pos_weight=spw)
         scores = model.predict_proba(X_val)[:, 1]
         return float(average_precision_score(y_val, scores))
 
@@ -186,14 +200,17 @@ def main(argv: list[str] | None = None) -> int:
         show_progress=not args.no_progress,
     )
     tune_sec = time.perf_counter() - t1
-    best_params = merge_lgbm_params(study.best_trial.params)
+    best_trial = study.best_trial
+    best_params = merge_lgbm_params(best_trial.params)
+    natural_spw = natural_scale_pos_weight(y_tr)
+    best_spw = float(best_trial.params["scale_pos_weight"])
 
     out_path = save_best_params(
         best_params,
         args.output,
         metadata={
             "best_value": round(float(study.best_value), 6),
-            "best_trial": study.best_trial.number,
+            "best_trial": best_trial.number,
             "n_trials": len(study.trials),
             "n_trials_requested": args.n_trials,
             "dataset_path": str(csv_path),
@@ -205,21 +222,29 @@ def main(argv: list[str] | None = None) -> int:
             "storage": storage_url,
             "feature_seconds": round(feat_sec, 2),
             "tune_seconds": round(tune_sec, 2),
+            "natural_scale_pos_weight": round(natural_spw, 4),
+            "scale_pos_weight": round(best_spw, 4),
+            "scale_pos_weight_multiplier": round(best_spw / natural_spw, 6),
         },
     )
 
-    print(f"\nBest validation PR-AUC: {study.best_value:.4f} (trial {study.best_trial.number})")
+    print(f"\nBest validation PR-AUC: {study.best_value:.4f} (trial {best_trial.number})")
     print("Best params:")
     for k, v in sorted(best_params.items()):
         print(f"  {k}: {v}")
+    print(f"  scale_pos_weight: {best_spw:.4f} (natural={natural_spw:.1f}, "
+          f"multiplier={best_spw / natural_spw:.3f})")
     print(f"\nWrote {out_path}")
     if storage_url:
         print(f"Study DB: {args.storage.resolve()}")
     print(
         "\nPipeline integration (when needed):\n"
+        "  import json\n"
         "  from algo.lgbm_params import load_lgbm_params\n"
         "  from algo.algo import train_model\n"
-        "  model = train_model(X_tr, y_tr, params=load_lgbm_params())"
+        "  meta = json.loads(open('ops/best_lgbm_params.json', encoding='utf-8').read())\n"
+        "  spw = meta.get('scale_pos_weight')  # omit to use natural neg/pos\n"
+        "  model = train_model(X_tr, y_tr, params=load_lgbm_params(), scale_pos_weight=spw)"
     )
     print(f"\nTotal: {feat_sec + tune_sec:.1f}s (features {feat_sec:.1f}s + trials {tune_sec:.1f}s)")
     return 0

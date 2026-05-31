@@ -496,16 +496,22 @@ def validate_dataset_labels(
 # ---------------------------------------------------------------------------
 # 5. Train
 # ---------------------------------------------------------------------------
-def train_model(X_tr, y_tr, *, params: Optional[Dict[str, Any]] = None):
+def train_model(
+    X_tr,
+    y_tr,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    scale_pos_weight: Optional[float] = None,
+):
     """Train LightGBM. Optional ``params`` overrides defaults (e.g. from ``lgbm_params.load_lgbm_params``)."""
-    from algo.lgbm_params import merge_lgbm_params
+    from algo.lgbm_params import merge_lgbm_params, natural_scale_pos_weight
 
-    pos = int(y_tr.sum())
-    neg = len(y_tr) - pos
     lgbm_kw = merge_lgbm_params(params)
+    if scale_pos_weight is None:
+        scale_pos_weight = natural_scale_pos_weight(y_tr)
     model = LGBMClassifier(
         **lgbm_kw,
-        scale_pos_weight=neg / max(pos, 1),  # imbalance handling
+        scale_pos_weight=scale_pos_weight,
         objective="binary",
         n_jobs=-1,
         random_state=42,
