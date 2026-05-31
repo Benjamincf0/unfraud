@@ -14,6 +14,8 @@ type TransactionDetailProps = {
   cardAnalysis: CardAnalysis | null
   cardAnalysisError: string | null
   isCardAnalysisLoading: boolean
+  isReasonsLoading?: boolean
+  reasonsLoadError?: string | null
   onDecide: (
     transactionId: string,
     decision: Exclude<ReviewDecision, 'pending'>,
@@ -34,6 +36,8 @@ export function TransactionDetail({
   cardAnalysis,
   cardAnalysisError,
   isCardAnalysisLoading,
+  isReasonsLoading = false,
+  reasonsLoadError = null,
   onDecide,
   onFilterCardCountry,
   onFilterByField,
@@ -162,27 +166,37 @@ export function TransactionDetail({
           </div>
         </dl>
 
-        <section className="reasons-section">
-          <div className="reason-list">
-            {transaction.reasons.map((reason) => (
-              <div className="reason-row" key={reason.id}>
-                <div>
-                  <strong>
-                    {reason.label}
-                    {reason.signalType ? (
-                      <span className="reason-signal-type">
-                        {reason.signalType.replace('_', ' ')}
-                      </span>
-                    ) : null}
-                  </strong>
-                  <p>{reason.detail}</p>
+        <section
+          aria-busy={isReasonsLoading}
+          aria-label="Risk signals"
+          className="reasons-section"
+        >
+          {isReasonsLoading ? (
+            <ReasonListSkeleton />
+          ) : reasonsLoadError ? (
+            <p className="analysis-state">{reasonsLoadError}</p>
+          ) : (
+            <div className="reason-list">
+              {transaction.reasons.map((reason) => (
+                <div className="reason-row" key={reason.id}>
+                  <div>
+                    <strong>
+                      {reason.label}
+                      {reason.signalType ? (
+                        <span className="reason-signal-type">
+                          {reason.signalType.replace('_', ' ')}
+                        </span>
+                      ) : null}
+                    </strong>
+                    <p>{reason.detail}</p>
+                  </div>
+                  <span title="Share of what drove the score for this alert">
+                    {reason.weight}%
+                  </span>
                 </div>
-                <span title="Share of what drove the model score for this alert">
-                  {reason.weight}%
-                </span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="context-section">
@@ -262,6 +276,22 @@ export function EmptyTransactionDetail() {
         <p className="empty-copy">Select a transaction to review.</p>
       </CardContent>
     </Card>
+  )
+}
+
+function ReasonListSkeleton() {
+  return (
+    <div aria-hidden="true" className="reason-list reason-list-skeleton">
+      {Array.from({ length: 3 }, (_, index) => (
+        <div className="reason-skeleton-row" key={index}>
+          <div className="reason-skeleton-copy">
+            <span className="reason-skeleton-line reason-skeleton-line-title" />
+            <span className="reason-skeleton-line reason-skeleton-line-detail" />
+          </div>
+          <span className="reason-skeleton-line reason-skeleton-line-weight" />
+        </div>
+      ))}
+    </div>
   )
 }
 

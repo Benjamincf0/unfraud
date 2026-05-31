@@ -76,6 +76,62 @@ class ReviewLogEntry(BaseModel):
     reviewer_notes: Optional[str] = None
     reviewed_at: str
 
+
+class FlaggedQueueStats(BaseModel):
+    pending: int
+    approved: int
+    dismissed: int
+    escalated: int
+
+
+class AnalysisSummaryResponse(BaseModel):
+    total_transactions: int
+    flagged_count: int
+    model_flagged_count: int = 0
+    ml_model_available: bool
+    flagged_queue_stats: FlaggedQueueStats
+    model_flagged_queue_stats: FlaggedQueueStats
+
+
+class QueueTransactionItem(TransactionBase):
+    is_fraud: bool
+    fraud_score: float
+    fraud_reasons: List[str] = Field(default_factory=list)
+    review_decision: str = ""
+    reviewer_notes: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    card_baseline: Dict[str, Any] = Field(default_factory=dict)
+
+
+class QueuePageResponse(BaseModel):
+    items: List[QueueTransactionItem]
+    total: int
+    offset: int
+    limit: Optional[int] = None
+
+
+class ScorerDetail(BaseModel):
+    fraud_score: float
+    is_fraud: bool
+    reasons: List[str] = Field(default_factory=list)
+    score_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
+    card_baseline: Dict[str, Any] = Field(default_factory=dict)
+    cross_card_signals: Dict[str, Any] = Field(default_factory=dict)
+    graph_features: Dict[str, float] = Field(default_factory=dict)
+
+
+class TransactionDetailResponse(TransactionBase):
+    heuristic: ScorerDetail
+    model: Optional[ScorerDetail] = None
+    review_decision: str = ""
+    reviewer_notes: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+class RelatedTransactionsResponse(BaseModel):
+    items: List[QueueTransactionItem]
+
+
 @app.get("/")
 def read_root():
     return {"status": "ok"}
@@ -219,6 +275,141 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
     )
 
 
+def _parse_fraud_reasons(value: Any) -> List[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [part.strip() for part in str(value).split(";") if part.strip()]
+
+
+def _parse_json_field(value: Any, fallback: Any) -> Any:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value) or json.dumps(fallback))
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_review_decision(value: Any) -> str:
+    decision = str(value or "").strip().lower()
+    if decision in {"approve", "approved"}:
+        return "approved"
+    if decision in {"dismiss", "dismissed"}:
+        return "dismissed"
+    if decision in {"escalate", "escalated"}:
+        return "escalated"
+    return "pending"
+
+
+def _flagged_queue_stats(file_hash: str, use_model: bool = False) -> FlaggedQueueStats:
+    queue_df = _queue_dataframe(file_hash, use_model=use_model, flagged_only=True)
+    normalized = queue_df["review_decision"].map(_normalize_review_decision)
+    counts = {"pending": 0, "approved": 0, "dismissed": 0, "escalated": 0}
+    for decision in normalized:
+        counts[decision] = counts.get(decision, 0) + 1
+    return FlaggedQueueStats(**counts)
+
+
+def _queue_dataframe(
+    file_hash: str,
+    use_model: bool = False,
+    flagged_only: bool = True,
+) -> pd.DataFrame:
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
+    if flagged_only:
+        analyzed_df = analyzed_df[
+            analyzed_df["is_fraud"] | (analyzed_df["fraud_score"] > 0)
+        ]
+    return analyzed_df.sort_values("fraud_score", ascending=False)
+
+
+def _row_to_queue_item(
+    row: pd.Series,
+    *,
+    include_card_baseline: bool = True,
+) -> QueueTransactionItem:
+    return QueueTransactionItem(
+        transaction_id=str(row["transaction_id"]),
+        timestamp=str(row["timestamp"]),
+        card_id=str(row["card_id"]),
+        amount=float(row["amount"]),
+        merchant_name=str(row["merchant_name"]),
+        merchant_category=str(row["merchant_category"]),
+        channel=str(row["channel"]),
+        cardholder_country=str(row["cardholder_country"]),
+        merchant_country=str(row["merchant_country"]),
+        device_id=_optional_text(row.get("device_id")),
+        ip_address=_optional_text(row.get("ip_address")),
+        is_fraud=bool(row["is_fraud"]),
+        fraud_score=float(row["fraud_score"]),
+        fraud_reasons=_parse_fraud_reasons(row.get("fraud_reasons")),
+        review_decision=str(row.get("review_decision") or ""),
+        reviewer_notes=_optional_text(row.get("reviewer_notes")),
+        reviewed_at=_optional_text(row.get("reviewed_at")),
+        card_baseline=(
+            _parse_json_field(row.get("card_baseline_json"), {})
+            if include_card_baseline
+            else {}
+        ),
+    )
+
+
+def _row_to_scorer_detail(row: pd.Series) -> ScorerDetail:
+    parsed_breakdown = _parse_json_field(row.get("score_breakdown"), [])
+    if not isinstance(parsed_breakdown, list):
+        parsed_breakdown = []
+    reasons = [
+        str(item["label"])
+        for item in parsed_breakdown
+        if isinstance(item, dict) and item.get("label")
+    ]
+    if not reasons:
+        reasons = _parse_fraud_reasons(row.get("fraud_reasons"))
+
+    graph_features = _parse_json_field(row.get("graph_features_json"), {})
+    if not isinstance(graph_features, dict):
+        graph_features = {}
+
+    return ScorerDetail(
+        fraud_score=float(row["fraud_score"]),
+        is_fraud=bool(row["is_fraud"]),
+        reasons=reasons,
+        score_breakdown=[
+            item for item in parsed_breakdown if isinstance(item, dict)
+        ],
+        card_baseline=_parse_json_field(row.get("card_baseline_json"), {}),
+        cross_card_signals=_parse_json_field(row.get("cross_card_signals_json"), {}),
+        graph_features={
+            str(key): float(value)
+            for key, value in graph_features.items()
+            if isinstance(value, (int, float))
+        },
+    )
+
+
+def _lookup_analysis_row(
+    file_hash: str,
+    transaction_id: str,
+    use_model: bool,
+) -> pd.Series:
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
+    matches = analyzed_df[analyzed_df["transaction_id"] == transaction_id]
+    if matches.empty:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return matches.iloc[0]
+
+
 def _to_fraud_analysis(row: pd.Series) -> FraudAnalysis:
     parsed_breakdown = json.loads(row.get("score_breakdown", "[]") or "[]")
     parsed_baseline = json.loads(row.get("card_baseline_json", "{}") or "{}")
@@ -244,6 +435,163 @@ def _to_fraud_analysis(row: pd.Series) -> FraudAnalysis:
         graph_features=parsed_graph_features,
         card_amount_series=parsed_card_series,
     )
+
+@app.get("/analysis/summary/{file_hash}", response_model=AnalysisSummaryResponse)
+async def get_analysis_summary(file_hash: str):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=False)
+    flagged_count = int(
+        (analyzed_df["is_fraud"] | (analyzed_df["fraud_score"] > 0)).sum()
+    )
+    model_flagged_count = 0
+    if is_model_available():
+        model_df = _analysis_with_review_columns(file_hash, use_model=True)
+        model_flagged_count = int(
+            (model_df["is_fraud"] | (model_df["fraud_score"] > 0)).sum()
+        )
+
+    model_flagged_queue_stats = (
+        _flagged_queue_stats(file_hash, use_model=True)
+        if is_model_available()
+        else FlaggedQueueStats(
+            pending=0,
+            approved=0,
+            dismissed=0,
+            escalated=0,
+        )
+    )
+
+    return AnalysisSummaryResponse(
+        total_transactions=len(uploaded_files[file_hash]),
+        flagged_count=flagged_count,
+        model_flagged_count=model_flagged_count,
+        ml_model_available=is_model_available(),
+        flagged_queue_stats=_flagged_queue_stats(file_hash, use_model=False),
+        model_flagged_queue_stats=model_flagged_queue_stats,
+    )
+
+
+@app.get("/analysis/queue/{file_hash}", response_model=QueuePageResponse)
+async def get_analysis_queue(
+    file_hash: str,
+    use_model: bool = False,
+    flagged_only: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    transaction_id: Optional[str] = None,
+    slim: bool = False,
+):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="Offset must be non-negative")
+    if limit is not None and limit < 1:
+        raise HTTPException(status_code=400, detail="Limit must be positive")
+
+    queue_df = _queue_dataframe(file_hash, use_model=use_model, flagged_only=flagged_only)
+
+    if transaction_id:
+        analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
+        matches = analyzed_df[analyzed_df["transaction_id"] == transaction_id]
+        if matches.empty:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        items = [_row_to_queue_item(matches.iloc[0])]
+        return QueuePageResponse(
+            items=items,
+            total=len(queue_df),
+            offset=0,
+            limit=1,
+        )
+
+    total = len(queue_df)
+    if limit is None:
+        page_df = queue_df.iloc[offset:]
+    else:
+        page_df = queue_df.iloc[offset : offset + limit]
+
+    return QueuePageResponse(
+        items=[
+            _row_to_queue_item(row, include_card_baseline=not slim)
+            for _, row in page_df.iterrows()
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@app.get(
+    "/analysis/transaction/{file_hash}/{transaction_id}",
+    response_model=TransactionDetailResponse,
+)
+async def get_transaction_detail(file_hash: str, transaction_id: str):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    heuristic_row = _lookup_analysis_row(file_hash, transaction_id, use_model=False)
+    model_detail = None
+    if is_model_available():
+        try:
+            model_row = _lookup_analysis_row(file_hash, transaction_id, use_model=True)
+            model_detail = _row_to_scorer_detail(model_row)
+        except HTTPException:
+            model_detail = None
+
+    return TransactionDetailResponse(
+        transaction_id=str(heuristic_row["transaction_id"]),
+        timestamp=str(heuristic_row["timestamp"]),
+        card_id=str(heuristic_row["card_id"]),
+        amount=float(heuristic_row["amount"]),
+        merchant_name=str(heuristic_row["merchant_name"]),
+        merchant_category=str(heuristic_row["merchant_category"]),
+        channel=str(heuristic_row["channel"]),
+        cardholder_country=str(heuristic_row["cardholder_country"]),
+        merchant_country=str(heuristic_row["merchant_country"]),
+        device_id=_optional_text(heuristic_row.get("device_id")),
+        ip_address=_optional_text(heuristic_row.get("ip_address")),
+        heuristic=_row_to_scorer_detail(heuristic_row),
+        model=model_detail,
+        review_decision=str(heuristic_row.get("review_decision") or ""),
+        reviewer_notes=_optional_text(heuristic_row.get("reviewer_notes")),
+        reviewed_at=_optional_text(heuristic_row.get("reviewed_at")),
+    )
+
+
+@app.get(
+    "/analysis/related/{file_hash}/{transaction_id}",
+    response_model=RelatedTransactionsResponse,
+)
+async def get_related_transactions(
+    file_hash: str,
+    transaction_id: str,
+    use_model: bool = False,
+):
+    if file_hash not in uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
+    active_rows = analyzed_df[analyzed_df["transaction_id"] == transaction_id]
+    if active_rows.empty:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    active = active_rows.iloc[0]
+    active_card = active["card_id"]
+    active_device = active.get("device_id")
+    active_ip = active.get("ip_address")
+
+    mask = analyzed_df["card_id"] == active_card
+    if _optional_text(active_device):
+        mask = mask | (analyzed_df["device_id"] == active_device)
+    if _optional_text(active_ip):
+        mask = mask | (analyzed_df["ip_address"] == active_ip)
+
+    related_df = analyzed_df[mask].sort_values("timestamp")
+    return RelatedTransactionsResponse(
+        items=[_row_to_queue_item(row) for _, row in related_df.iterrows()],
+    )
+
 
 @app.get("/analysis/all/{file_hash}")
 async def get_all_analysis(file_hash: str, use_model: bool = False):

@@ -1,41 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader } from './ui/card'
 
 type UploadCsvProps = {
   error: string | null
-  isModelStatusLoading: boolean
   isUploading: boolean
-  mlModelAvailable: boolean
-  modelPath?: string
-  modelStatusError: string | null
-  onUpload: (file: File, useModel: boolean) => void
+  onUpload: (file: File) => void
 }
 
-export function UploadCsv({
-  error,
-  isModelStatusLoading,
-  isUploading,
-  mlModelAvailable,
-  modelPath,
-  modelStatusError,
-  onUpload,
-}: UploadCsvProps) {
+export function UploadCsv({ error, isUploading, onUpload }: UploadCsvProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [useModel, setUseModel] = useState(false)
-  const modelOptionDisabled =
-    isUploading || isModelStatusLoading || !mlModelAvailable
-
-  useEffect(() => {
-    if (!mlModelAvailable) {
-      setUseModel(false)
-    }
-  }, [mlModelAvailable])
 
   const submitUpload = () => {
     if (selectedFile) {
-      onUpload(selectedFile, useModel)
+      onUpload(selectedFile)
     }
   }
 
@@ -77,25 +56,6 @@ export function UploadCsv({
               {error}
             </div>
           ) : null}
-
-          <label className="upload-option">
-            <input
-              checked={useModel}
-              disabled={modelOptionDisabled}
-              onChange={(event) => setUseModel(event.target.checked)}
-              type="checkbox"
-            />
-            <span>
-              Use trained ML model
-              {isModelStatusLoading ? ' (checking backend model...)' : ''}
-              {!isModelStatusLoading && modelStatusError
-                ? ' (could not check backend model)'
-                : ''}
-              {!isModelStatusLoading && !modelStatusError && !mlModelAvailable
-                ? ` (not available at ${modelPath ?? 'backend/algo/ops/fraud_model.pkl'})`
-                : ''}
-            </span>
-          </label>
 
           <div className="upload-actions">
             <Button

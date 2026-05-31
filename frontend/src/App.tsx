@@ -3,10 +3,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
 import {
-  fetchReviewDataByHash,
-  fetchScoringStatus,
+  openReviewSession,
   uploadTransactionsCsv,
-  type ReviewDataResult,
+  type ReviewSessionData,
 } from './api/review'
 import {
   clearActiveReviewSession,
@@ -17,64 +16,54 @@ import {
 } from './lib/reviewSessions'
 
 function App() {
-  const [reviewData, setReviewData] = useState<ReviewDataResult | null>(null)
+  const [session, setSession] = useState<ReviewSessionData | null>(null)
   const [sessions, setSessions] = useState(loadReviewSessions)
   const [activeFileHash, setActiveFileHash] = useState(
     loadActiveReviewSession,
   )
   const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
-  const activeSession = sessions.find((session) => session.fileHash === activeFileHash)
-  const activeUseModel = activeSession?.useModel ?? reviewData?.useModel ?? false
-  const cachedResultQuery = useQuery({
+  const sessionQuery = useQuery({
     enabled:
       !isUploadMode &&
       Boolean(activeFileHash) &&
-      reviewData?.fileHash !== activeFileHash,
-    queryFn: () => fetchReviewDataByHash(activeFileHash ?? '', activeUseModel),
-    queryKey: ['review-data', activeFileHash, activeUseModel],
+      session?.fileHash !== activeFileHash,
+    queryFn: () => openReviewSession(activeFileHash ?? ''),
+    queryKey: ['review-session', activeFileHash],
   })
   const uploadMutation = useMutation({
-    mutationFn: ({ file, useModel }: { file: File; useModel: boolean }) =>
-      uploadTransactionsCsv(file, useModel),
-    onSuccess: (data, variables) => {
+    mutationFn: (file: File) => uploadTransactionsCsv(file),
+    onSuccess: (data, file) => {
       setSessions(
         saveReviewSession({
           fileHash: data.fileHash,
-          label: variables.file.name,
+          label: file.name,
           uploadedAt: new Date().toISOString(),
-          useModel: data.useModel,
         }),
       )
       setActiveFileHash(data.fileHash)
-      setReviewData(data)
+      setSession(data)
       setIsUploadMode(false)
     },
   })
-  const activeReviewData =
-    reviewData?.fileHash === activeFileHash
-      ? reviewData
-      : cachedResultQuery.data ?? null
-  const shouldShowUploadScreen = !activeReviewData
-  const scoringStatusQuery = useQuery({
-    enabled: shouldShowUploadScreen,
-    queryFn: fetchScoringStatus,
-    queryKey: ['scoring-status'],
-  })
+  const activeSession =
+    session?.fileHash === activeFileHash
+      ? session
+      : sessionQuery.data ?? null
 
-  const uploadCsv = (file: File, useModel: boolean) => {
-    uploadMutation.mutate({ file, useModel })
+  const uploadCsv = (file: File) => {
+    uploadMutation.mutate(file)
   }
 
   const selectSession = useCallback((fileHash: string) => {
     saveActiveReviewSession(fileHash)
     setActiveFileHash(fileHash)
-    setReviewData(null)
+    setSession(null)
     setIsUploadMode(false)
   }, [])
 
   const showUploadScreen = useCallback(() => {
     clearActiveReviewSession()
-    setReviewData(null)
+    setSession(null)
     setActiveFileHash(null)
     setIsUploadMode(true)
   }, [])
@@ -85,25 +74,17 @@ function App() {
     }
   }, [activeFileHash, isUploadMode, selectSession, sessions])
 
-  if (!activeReviewData) {
+  if (!activeSession) {
     return (
       <UploadCsv
         error={
-          cachedResultQuery.error instanceof Error
-            ? cachedResultQuery.error.message
+          sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
             : uploadMutation.error instanceof Error
             ? uploadMutation.error.message
             : null
         }
-        isUploading={uploadMutation.isPending || cachedResultQuery.isFetching}
-        isModelStatusLoading={scoringStatusQuery.isFetching}
-        mlModelAvailable={scoringStatusQuery.data?.ml_model_available ?? false}
-        modelPath={scoringStatusQuery.data?.ml_model_path}
-        modelStatusError={
-          scoringStatusQuery.error instanceof Error
-            ? scoringStatusQuery.error.message
-            : null
-        }
+        isUploading={uploadMutation.isPending || sessionQuery.isFetching}
         onUpload={uploadCsv}
       />
     )
@@ -111,14 +92,11 @@ function App() {
 
   return (
     <ReviewQueue
-      activeFileHash={activeReviewData.fileHash}
-      allItems={activeReviewData.allItems}
-      fileHash={activeReviewData.fileHash}
-      items={activeReviewData.items}
+      activeFileHash={activeSession.fileHash}
       onReset={showUploadScreen}
       onSelectSession={selectSession}
+      session={activeSession}
       sessions={sessions}
-      useModel={activeReviewData.useModel}
     />
   )
 }
