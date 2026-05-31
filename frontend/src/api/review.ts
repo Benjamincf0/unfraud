@@ -4,7 +4,7 @@ import type {
   ReviewSessionData,
 } from '../lib/scoringViews'
 import { emptyFlaggedQueueStats } from '../lib/scoringViews'
-import { QUEUE_BOOTSTRAP_LIMIT } from '../lib/scoringViews'
+import { QUEUE_FETCH_PAGE_SIZE } from '../lib/scoringViews'
 import type {
   CardAnalysis,
   ReviewLogEntry,
@@ -126,9 +126,16 @@ export type TransactionDetailResult = {
   model: BackendScorerDetail | null
 }
 
-export type ReviewBootstrapResult = {
+export type ReviewQueueLoadResult = {
   heuristic: TransactionFlag[]
   model: TransactionFlag[]
+}
+
+export type ReviewQueueLoadProgress = {
+  heuristicLoaded: number
+  heuristicTotal: number
+  modelLoaded: number
+  modelTotal: number
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -148,12 +155,14 @@ function buildQueueUrl(
     flaggedOnly = true,
     limit,
     offset = 0,
+    slim = false,
     transactionId,
     useModel = false,
   }: {
     flaggedOnly?: boolean
     limit?: number
     offset?: number
+    slim?: boolean
     transactionId?: string
     useModel?: boolean
   } = {},
@@ -166,6 +175,10 @@ function buildQueueUrl(
 
   if (!flaggedOnly) {
     params.set('flagged_only', 'false')
+  }
+
+  if (slim) {
+    params.set('slim', 'true')
   }
 
   if (typeof limit === 'number') {
@@ -215,12 +228,14 @@ export async function fetchReviewQueuePage(
     flaggedOnly = true,
     limit,
     offset = 0,
+    slim = false,
     transactionId,
     useModel = false,
   }: {
     flaggedOnly?: boolean
     limit?: number
     offset?: number
+    slim?: boolean
     transactionId?: string
     useModel?: boolean
   } = {},
@@ -230,6 +245,7 @@ export async function fetchReviewQueuePage(
       flaggedOnly,
       limit,
       offset,
+      slim,
       transactionId,
       useModel,
     }),
@@ -247,39 +263,107 @@ export async function fetchReviewQueuePage(
   }
 }
 
-export async function fetchReviewBootstrap(
+export async function fetchAllReviewQueue(
+  fileHash: string,
+  {
+    onChunk,
+    onProgress,
+    useModel = false,
+  }: {
+    onChunk?: (items: TransactionFlag[]) => void
+    onProgress?: (loaded: number, total: number) => void
+    useModel?: boolean
+  } = {},
+): Promise<TransactionFlag[]> {
+  const firstPage = await fetchReviewQueuePage(fileHash, {
+    limit: QUEUE_FETCH_PAGE_SIZE,
+    offset: 0,
+    slim: true,
+    useModel,
+  })
+
+  const items = [...firstPage.items]
+  onChunk?.(firstPage.items)
+  onProgress?.(items.length, firstPage.total)
+
+  let offset = items.length
+  while (offset < firstPage.total) {
+    const page = await fetchReviewQueuePage(fileHash, {
+      limit: QUEUE_FETCH_PAGE_SIZE,
+      offset,
+      slim: true,
+      useModel,
+    })
+
+    items.push(...page.items)
+    onChunk?.(page.items)
+    offset += page.items.length
+    onProgress?.(offset, firstPage.total)
+  }
+
+  return items
+}
+
+export async function fetchFullReviewQueue(
   fileHash: string,
   summary: ReviewSummary,
-): Promise<ReviewBootstrapResult> {
-  const heuristicPage = await fetchReviewQueuePage(fileHash, {
-    limit: QUEUE_BOOTSTRAP_LIMIT,
-    offset: 0,
-    useModel: false,
+  {
+    onHeuristicChunk,
+    onModelChunk,
+    onProgress,
+  }: {
+    onHeuristicChunk?: (items: TransactionFlag[]) => void
+    onModelChunk?: (items: TransactionFlag[]) => void
+    onProgress?: (progress: ReviewQueueLoadProgress) => void
+  } = {},
+): Promise<ReviewQueueLoadResult> {
+  const heuristic = await fetchAllReviewQueue(fileHash, {
+    onChunk: onHeuristicChunk,
+    onProgress: (loaded, total) => {
+      onProgress?.({
+        heuristicLoaded: loaded,
+        heuristicTotal: total,
+        modelLoaded: 0,
+        modelTotal: summary.modelFlaggedCount,
+      })
+    },
   })
 
   if (!summary.mlModelAvailable) {
-    return {
-      heuristic: heuristicPage.items,
-      model: [],
-    }
+    onProgress?.({
+      heuristicLoaded: heuristic.length,
+      heuristicTotal: heuristic.length,
+      modelLoaded: 0,
+      modelTotal: 0,
+    })
+
+    return { heuristic, model: [] }
   }
 
   try {
-    const modelPage = await fetchReviewQueuePage(fileHash, {
-      limit: QUEUE_BOOTSTRAP_LIMIT,
-      offset: 0,
+    const model = await fetchAllReviewQueue(fileHash, {
+      onChunk: onModelChunk,
+      onProgress: (loaded, total) => {
+        onProgress?.({
+          heuristicLoaded: heuristic.length,
+          heuristicTotal: heuristic.length,
+          modelLoaded: loaded,
+          modelTotal: total,
+        })
+      },
       useModel: true,
     })
 
-    return {
-      heuristic: heuristicPage.items,
-      model: modelPage.items,
-    }
+    return { heuristic, model }
   } catch {
-    return {
-      heuristic: heuristicPage.items,
-      model: [],
-    }
+    onProgress?.({
+      heuristicLoaded: heuristic.length,
+      heuristicTotal: heuristic.length,
+      modelLoaded: 0,
+      modelTotal: summary.modelFlaggedCount,
+    })
+
+    return { heuristic, model: [] }
   }
 }
 

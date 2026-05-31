@@ -158,6 +158,11 @@ tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,
     assert "fraud_score" in queue["items"][0]
     assert "card_baseline" in queue["items"][0]
 
+    response = client.get(f"/analysis/queue/{file_hash}?limit=2&slim=true")
+    assert response.status_code == 200
+    slim_queue = response.json()
+    assert slim_queue["items"][0]["card_baseline"] == {}
+
     tx_id = queue["items"][0]["transaction_id"]
     response = client.get(
         f"/analysis/queue/{file_hash}?transaction_id={tx_id}",

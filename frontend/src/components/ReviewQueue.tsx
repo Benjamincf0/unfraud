@@ -19,22 +19,21 @@ import { Tabs } from "./ui/tabs";
 import {
   applyScorerDetailToTransaction,
   fetchCardAnalysis,
+  fetchFullReviewQueue,
   fetchRelatedTransactions,
-  fetchReviewBootstrap,
   fetchReviewLog,
   fetchReviewQueuePage,
   fetchReviewSummary,
   fetchTransactionDetail,
   submitReviewDecision,
+  type ReviewQueueLoadProgress,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
 import { mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
   defaultRiskTuning,
-  DETAIL_PREFETCH_CONCURRENCY,
   getEffectiveRiskThreshold,
-  QUEUE_PAGE_SIZE,
   resolveRiskSortMode,
   sortTransactionsByScore,
   type ReviewSessionData,
@@ -61,48 +60,18 @@ function flaggedTransactionsFrom(
   return Array.from(byId.values()).filter(isFlaggedTransaction);
 }
 
-function flaggedTransactionIds(items: TransactionFlag[]) {
-  return items
-    .filter(isFlaggedTransaction)
-    .map((transaction) => transaction.transactionId);
-}
+type QueueLoadState = {
+  error: string | null;
+  progress: ReviewQueueLoadProgress;
+  status: "idle" | "loading" | "ready" | "error";
+};
 
-function addFlaggedTransactionIds(
-  current: Set<string>,
-  items: TransactionFlag[],
-): Set<string> {
-  const next = new Set(current);
-  for (const transaction of items) {
-    if (isFlaggedTransaction(transaction)) {
-      next.add(transaction.transactionId);
-    }
-  }
-  return next;
-}
-
-function addFlaggedTransactionId(
-  current: Set<string>,
-  transaction: TransactionFlag,
-): Set<string> {
-  if (!isFlaggedTransaction(transaction) || current.has(transaction.transactionId)) {
-    return current;
-  }
-
-  const next = new Set(current);
-  next.add(transaction.transactionId);
-  return next;
-}
-
-function countLoadedTransactions(
-  heuristicById: Map<string, TransactionFlag>,
-  modelById: Map<string, TransactionFlag>,
-) {
-  const ids = new Set(heuristicById.keys());
-  for (const transactionId of modelById.keys()) {
-    ids.add(transactionId);
-  }
-  return ids.size;
-}
+const emptyQueueLoadProgress: ReviewQueueLoadProgress = {
+  heuristicLoaded: 0,
+  heuristicTotal: 0,
+  modelLoaded: 0,
+  modelTotal: 0,
+};
 
 type SearchMode = "all" | "single" | "custom";
 
@@ -337,10 +306,11 @@ export function ReviewQueue({
   const [relatedById, setRelatedById] = useState(
     () => new Map<string, TransactionFlag[]>(),
   );
-  const [loadedHeuristicIds, setLoadedHeuristicIds] = useState(
-    () => new Set<string>(),
-  );
-  const [loadedModelIds, setLoadedModelIds] = useState(() => new Set<string>());
+  const [queueLoad, setQueueLoad] = useState<QueueLoadState>({
+    error: null,
+    progress: emptyQueueLoadProgress,
+    status: "idle",
+  });
   const [activeId, setActiveId] = useState("");
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
@@ -359,7 +329,6 @@ export function ReviewQueue({
     label: string;
     transactionIds: Set<string>;
   } | null>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [enrichedTransactionIds, setEnrichedTransactionIds] = useState(
     () => new Set<string>(),
   );
@@ -378,10 +347,6 @@ export function ReviewQueue({
   modelByIdRef.current = modelById;
   relatedByIdRef.current = relatedById;
   enrichedTransactionIdsRef.current = enrichedTransactionIds;
-  const bootstrapQuery = useQuery({
-    queryFn: () => fetchReviewBootstrap(fileHash, summary),
-    queryKey: ["review-bootstrap", fileHash],
-  });
   const {
     error: reviewSyncError,
     isError: reviewSyncFailed,
@@ -431,8 +396,6 @@ export function ReviewQueue({
     setHeuristicById(new Map());
     setModelById(new Map());
     setRelatedById(new Map());
-    setLoadedHeuristicIds(new Set());
-    setLoadedModelIds(new Set());
     setEnrichedTransactionIds(new Set());
     setEnrichmentFailedIds(new Set());
     setEnrichingTransactionId(null);
@@ -447,37 +410,85 @@ export function ReviewQueue({
     setCustomFields(["transaction_id", "card_id", "merchant_name"]);
     setNetworkFocus(null);
     setHistory([]);
-  }, [fileHash]);
 
-  useEffect(() => {
-    if (!bootstrapQuery.data) {
-      return;
+    let cancelled = false;
+
+    async function loadQueue() {
+      setQueueLoad({
+        error: null,
+        progress: {
+          heuristicLoaded: 0,
+          heuristicTotal: summary.flaggedCount,
+          modelLoaded: 0,
+          modelTotal: summary.modelFlaggedCount,
+        },
+        status: "loading",
+      });
+
+      try {
+        await fetchFullReviewQueue(fileHash, summary, {
+          onHeuristicChunk: (items) => {
+            if (cancelled || items.length === 0) {
+              return;
+            }
+
+            setHeuristicById((current) =>
+              mergeTransactionMaps(current, items),
+            );
+            setActiveId((current) => current || items[0]?.transactionId || "");
+          },
+          onModelChunk: (items) => {
+            if (cancelled || items.length === 0) {
+              return;
+            }
+
+            setModelById((current) => mergeTransactionMaps(current, items));
+          },
+          onProgress: (progress) => {
+            if (cancelled) {
+              return;
+            }
+
+            setQueueLoad((current) => ({
+              ...current,
+              progress,
+            }));
+          },
+        });
+
+        if (!cancelled) {
+          setQueueLoad((current) => ({
+            ...current,
+            status: "ready",
+          }));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setQueueLoad({
+            error:
+              error instanceof Error
+                ? error.message
+                : "Could not load review queue.",
+            progress: emptyQueueLoadProgress,
+            status: "error",
+          });
+        }
+      }
     }
 
-    setHeuristicById((current) =>
-      mergeTransactionMaps(current, bootstrapQuery.data.heuristic),
-    );
-    setModelById((current) =>
-      mergeTransactionMaps(current, bootstrapQuery.data.model),
-    );
-    const bootstrapHeuristicIds = flaggedTransactionIds(
-      bootstrapQuery.data.heuristic,
-    );
-    const bootstrapModelIds = flaggedTransactionIds(bootstrapQuery.data.model);
-    setLoadedHeuristicIds(new Set(bootstrapHeuristicIds));
-    setLoadedModelIds(new Set(bootstrapModelIds));
-    setActiveId((current) => {
-      if (current) {
-        return current;
-      }
+    void loadQueue();
 
-      return (
-        bootstrapQuery.data.heuristic[0]?.transactionId ||
-        bootstrapQuery.data.model[0]?.transactionId ||
-        ""
-      );
-    });
-  }, [bootstrapQuery.data]);
+    return () => {
+      cancelled = true;
+    };
+    // Summary counts are stable for a file hash; avoid reloading on object identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fileHash,
+    summary.flaggedCount,
+    summary.mlModelAvailable,
+    summary.modelFlaggedCount,
+  ]);
 
   const enrichTransactionDetail = useCallback(
     async (transactionId: string) => {
@@ -503,9 +514,6 @@ export function ReviewQueue({
             setHeuristicById((current) =>
               mergeTransactionMaps(current, [heuristicItem!]),
             );
-            setLoadedHeuristicIds((current) =>
-              addFlaggedTransactionId(current, heuristicItem!),
-            );
           }
         }
 
@@ -520,9 +528,6 @@ export function ReviewQueue({
           if (modelItem) {
             setModelById((current) =>
               mergeTransactionMaps(current, [modelItem!]),
-            );
-            setLoadedModelIds((current) =>
-              addFlaggedTransactionId(current, modelItem!),
             );
           }
         }
@@ -623,50 +628,6 @@ export function ReviewQueue({
     [fileHash],
   );
 
-  useEffect(() => {
-    if (!bootstrapQuery.data) {
-      return;
-    }
-
-    let cancelled = false;
-    const bootstrapIds = bootstrapQuery.data.heuristic.map(
-      (transaction) => transaction.transactionId,
-    );
-
-    async function prefetchBootstrapDetails() {
-      const [priorityId, ...remainingIds] = bootstrapIds;
-
-      if (priorityId && !cancelled) {
-        await enrichTransactionDetail(priorityId).catch(() => false);
-      }
-
-      let nextIndex = 0;
-
-      async function worker() {
-        while (nextIndex < remainingIds.length && !cancelled) {
-          const transactionId = remainingIds[nextIndex];
-          nextIndex += 1;
-
-          if (enrichedTransactionIdsRef.current.has(transactionId)) {
-            continue;
-          }
-
-          await enrichTransactionDetail(transactionId).catch(() => false);
-        }
-      }
-
-      await Promise.all(
-        Array.from({ length: DETAIL_PREFETCH_CONCURRENCY }, () => worker()),
-      );
-    }
-
-    void prefetchBootstrapDetails();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [bootstrapQuery.data, enrichTransactionDetail]);
-
   useLayoutEffect(() => {
     if (!activeId) {
       setEnrichingTransactionId(null);
@@ -721,13 +682,6 @@ export function ReviewQueue({
     () =>
       flaggedTransactionsFrom(useModel ? modelById : heuristicById),
     [heuristicById, modelById, useModel],
-  );
-
-  const loadedHeuristicCount = loadedHeuristicIds.size;
-  const loadedModelCount = loadedModelIds.size;
-  const loadedTransactionCount = useMemo(
-    () => countLoadedTransactions(heuristicById, modelById),
-    [heuristicById, modelById],
   );
 
   const heuristicIndex = useMemo(
@@ -911,12 +865,24 @@ export function ReviewQueue({
     activeQueueStats.dismissed +
     activeQueueStats.escalated;
   const scorerLabel = useModel ? "ML model" : "Heuristic";
-  const loadedScorerCount = useModel ? loadedModelCount : loadedHeuristicCount;
-  const hasMoreFlagged = loadedScorerCount < activeFlaggedCount;
+  const activeQueueProgress = useModel
+    ? {
+        loaded: queueLoad.progress.modelLoaded,
+        total: queueLoad.progress.modelTotal,
+      }
+    : {
+        loaded: queueLoad.progress.heuristicLoaded,
+        total: queueLoad.progress.heuristicTotal,
+      };
+  const isQueueLoading = queueLoad.status === "loading";
 
   const statusContextLine = useMemo(() => {
-    if (loadedTransactionCount > 0) {
-      return `Loaded ${loadedTransactionCount.toLocaleString()} transactions`;
+    if (isQueueLoading && activeQueueProgress.total > 0) {
+      return `Loading flagged queue… ${activeQueueProgress.loaded.toLocaleString()} / ${activeQueueProgress.total.toLocaleString()}`;
+    }
+
+    if (isQueueLoading) {
+      return "Loading flagged queue…";
     }
 
     const filtersActive =
@@ -926,7 +892,7 @@ export function ReviewQueue({
       effectiveRiskThreshold > 0;
 
     if (filtersActive && visibleTransactions.length !== transactions.length) {
-      return `Showing ${visibleTransactions.length.toLocaleString()} of ${transactions.length.toLocaleString()} loaded flagged (filters active)`;
+      return `Showing ${visibleTransactions.length.toLocaleString()} of ${transactions.length.toLocaleString()} flagged (filters active)`;
     }
 
     if (reviewedCount > 0) {
@@ -943,9 +909,11 @@ export function ReviewQueue({
 
     return null;
   }, [
+    activeQueueProgress.loaded,
+    activeQueueProgress.total,
     effectiveRiskThreshold,
     filter,
-    loadedTransactionCount,
+    isQueueLoading,
     networkFocus,
     notQueuedCount,
     activeQueueStats,
@@ -962,93 +930,6 @@ export function ReviewQueue({
 
     setUseModel(nextUseModel);
   };
-
-  const loadMoreFlagged = useCallback(async () => {
-    const canLoadHeuristic = loadedHeuristicCount < summary.flaggedCount;
-    const canLoadModel =
-      summary.mlModelAvailable &&
-      loadedModelCount < summary.modelFlaggedCount;
-
-    if (isLoadingMore || (!canLoadHeuristic && !canLoadModel)) {
-      return;
-    }
-
-    setIsLoadingMore(true);
-
-    try {
-      let prefetchIds: string[] = [];
-
-      if (canLoadHeuristic) {
-        const heuristicPage = await fetchReviewQueuePage(fileHash, {
-          limit: QUEUE_PAGE_SIZE,
-          offset: loadedHeuristicCount,
-          useModel: false,
-        });
-        setHeuristicById((current) =>
-          mergeTransactionMaps(current, heuristicPage.items),
-        );
-        setLoadedHeuristicIds((current) =>
-          addFlaggedTransactionIds(current, heuristicPage.items),
-        );
-        prefetchIds = heuristicPage.items.map(
-          (transaction) => transaction.transactionId,
-        );
-      }
-
-      if (canLoadModel) {
-        const modelPage = await fetchReviewQueuePage(fileHash, {
-          limit: QUEUE_PAGE_SIZE,
-          offset: loadedModelCount,
-          useModel: true,
-        });
-        setModelById((current) =>
-          mergeTransactionMaps(current, modelPage.items),
-        );
-        setLoadedModelIds((current) =>
-          addFlaggedTransactionIds(current, modelPage.items),
-        );
-
-        if (prefetchIds.length === 0) {
-          prefetchIds = modelPage.items.map(
-            (transaction) => transaction.transactionId,
-          );
-        }
-      }
-
-      void (async () => {
-        let nextIndex = 0;
-        const transactionIds = prefetchIds;
-
-        async function worker() {
-          while (nextIndex < transactionIds.length) {
-            const transactionId = transactionIds[nextIndex];
-            nextIndex += 1;
-
-            if (enrichedTransactionIdsRef.current.has(transactionId)) {
-              continue;
-            }
-
-            await enrichTransactionDetail(transactionId).catch(() => false);
-          }
-        }
-
-        await Promise.all(
-          Array.from({ length: DETAIL_PREFETCH_CONCURRENCY }, () => worker()),
-        );
-      })();
-    } finally {
-      setIsLoadingMore(false);
-    }
-  }, [
-    enrichTransactionDetail,
-    fileHash,
-    isLoadingMore,
-    loadedHeuristicIds,
-    loadedModelIds,
-    summary.flaggedCount,
-    summary.mlModelAvailable,
-    summary.modelFlaggedCount,
-  ]);
 
   useEffect(() => {
     if (sortMode === "model" && !summary.mlModelAvailable) {
@@ -1295,24 +1176,22 @@ export function ReviewQueue({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeTransaction, decide, moveActive, undo]);
 
-  if (bootstrapQuery.isLoading && heuristicById.size === 0) {
+  if (queueLoad.status === "loading" && heuristicById.size === 0) {
     return (
       <div className="app-shell review-shell">
         <main className="workspace">
-          <p className="empty-copy">Loading review queue…</p>
+          <p className="empty-copy">{statusContextLine ?? "Loading review queue…"}</p>
         </main>
       </div>
     );
   }
 
-  if (bootstrapQuery.isError && heuristicById.size === 0) {
+  if (queueLoad.status === "error" && heuristicById.size === 0) {
     return (
       <div className="app-shell review-shell">
         <main className="workspace">
           <p className="empty-copy" role="alert">
-            {bootstrapQuery.error instanceof Error
-              ? bootstrapQuery.error.message
-              : "Could not load review queue."}
+            {queueLoad.error ?? "Could not load review queue."}
           </p>
           <Button onClick={onReset} size="sm" variant="outline">
             Upload CSV
@@ -1471,16 +1350,6 @@ export function ReviewQueue({
             <Button onClick={onReset} size="sm" variant="outline">
               Upload CSV
             </Button>
-            {hasMoreFlagged ? (
-              <Button
-                disabled={isLoadingMore || bootstrapQuery.isFetching}
-                onClick={() => void loadMoreFlagged()}
-                size="sm"
-                variant="outline"
-              >
-                {isLoadingMore ? "Loading…" : "Load more flagged"}
-              </Button>
-            ) : null}
           </div>
         </header>
 

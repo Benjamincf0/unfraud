@@ -334,7 +334,11 @@ def _queue_dataframe(
     return analyzed_df.sort_values("fraud_score", ascending=False)
 
 
-def _row_to_queue_item(row: pd.Series) -> QueueTransactionItem:
+def _row_to_queue_item(
+    row: pd.Series,
+    *,
+    include_card_baseline: bool = True,
+) -> QueueTransactionItem:
     return QueueTransactionItem(
         transaction_id=str(row["transaction_id"]),
         timestamp=str(row["timestamp"]),
@@ -353,7 +357,11 @@ def _row_to_queue_item(row: pd.Series) -> QueueTransactionItem:
         review_decision=str(row.get("review_decision") or ""),
         reviewer_notes=_optional_text(row.get("reviewer_notes")),
         reviewed_at=_optional_text(row.get("reviewed_at")),
-        card_baseline=_parse_json_field(row.get("card_baseline_json"), {}),
+        card_baseline=(
+            _parse_json_field(row.get("card_baseline_json"), {})
+            if include_card_baseline
+            else {}
+        ),
     )
 
 
@@ -473,6 +481,7 @@ async def get_analysis_queue(
     limit: Optional[int] = None,
     offset: int = 0,
     transaction_id: Optional[str] = None,
+    slim: bool = False,
 ):
     if file_hash not in uploaded_files:
         raise HTTPException(status_code=404, detail="File not found")
@@ -503,7 +512,10 @@ async def get_analysis_queue(
         page_df = queue_df.iloc[offset : offset + limit]
 
     return QueuePageResponse(
-        items=[_row_to_queue_item(row) for _, row in page_df.iterrows()],
+        items=[
+            _row_to_queue_item(row, include_card_baseline=not slim)
+            for _, row in page_df.iterrows()
+        ],
         total=total,
         offset=offset,
         limit=limit,

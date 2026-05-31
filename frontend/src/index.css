@@ -566,6 +566,11 @@ button:disabled {
   padding: 6px;
 }
 
+.queue-list-virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+
 .queue-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(82px, auto);
