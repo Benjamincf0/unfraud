@@ -495,16 +495,45 @@ export function ReviewQueue({
     [queueStats, transactions.length],
   );
 
-  const tunedQueueCount = useMemo(
-    () =>
-      orderedTransactions.filter((transaction) => {
-        const thresholdScore =
-          scoreIndex.get(transaction.transactionId) ?? transaction.score;
+  const activeScoringSnapshot =
+    useModel && reviewData.model ? reviewData.model : reviewData.heuristic
+  const totalScoredCount = activeScoringSnapshot.allItems.length
+  const queuedCount = transactions.length
+  const notQueuedCount = Math.max(0, totalScoredCount - queuedCount)
+  const reviewedCount = queuedCount - queueStats.pending
+  const scorerLabel = useModel ? 'ML model' : 'Heuristic'
 
-        return thresholdScore * 100 >= effectiveRiskThreshold;
-      }).length,
-    [effectiveRiskThreshold, orderedTransactions, scoreIndex],
-  );
+  const statusContextLine = useMemo(() => {
+    const filtersActive =
+      filter !== 'pending' ||
+      query.trim() !== '' ||
+      networkFocus !== null ||
+      effectiveRiskThreshold > 0
+
+    if (filtersActive && visibleTransactions.length !== queuedCount) {
+      return `Showing ${visibleTransactions.length.toLocaleString()} of ${queuedCount.toLocaleString()} flagged (filters active)`
+    }
+
+    if (reviewedCount > 0) {
+      return `${queueStats.pending.toLocaleString()} still to review · ${reviewedCount.toLocaleString()} reviewed`
+    }
+
+    if (notQueuedCount > 0) {
+      return `${notQueuedCount.toLocaleString()} scored with no flag (not in this list)`
+    }
+
+    return null
+  }, [
+    effectiveRiskThreshold,
+    filter,
+    networkFocus,
+    notQueuedCount,
+    queueStats.pending,
+    query,
+    queuedCount,
+    reviewedCount,
+    visibleTransactions.length,
+  ])
 
   const applyScoringView = useCallback(
     (nextUseModel: boolean, decisions: Map<string, ReviewDecision>) => {
@@ -808,21 +837,32 @@ export function ReviewQueue({
     <div className="app-shell review-shell">
       <main className="workspace">
         <header className="topbar">
-          <div className="review-status" aria-label="Review status">
-            <strong>{queueStats.pending}</strong>
-            <span>pending</span>
-            <span>{visibleTransactions.length} shown</span>
-            <span>{tunedQueueCount} tuned</span>
-            <span>{transactions.length} in queue</span>
-            {networkFocus ? <span>network: {networkFocus.label}</span> : null}
-            {reviewSyncFailed ? (
-              <span title={reviewSyncError?.message}>Sync failed</span>
+          <div
+            className="review-status"
+            aria-label="Review queue summary"
+            title="Flagged = scorer marked suspicious or gave a risk score above zero. The upload is fully scored; only flagged rows appear in the list below."
+          >
+            <p className="review-status-primary">
+              <strong>
+                {queuedCount.toLocaleString()} /{' '}
+                {totalScoredCount.toLocaleString()}
+              </strong>
+              <span>flagged for review</span>
+              <span className="review-status-scorer">{scorerLabel}</span>
+            </p>
+            {statusContextLine ? (
+              <p className="review-status-context">{statusContextLine}</p>
             ) : null}
-            <span>{useModel ? "ML model" : "Heuristic"}</span>
-            <span>
-              Sort:{" "}
-              {sortModeOptions.find((option) => option.value === sortMode)?.label}
-            </span>
+            {networkFocus || reviewSyncFailed ? (
+              <p className="review-status-meta">
+                {networkFocus ? (
+                  <span>Network: {networkFocus.label}</span>
+                ) : null}
+                {reviewSyncFailed ? (
+                  <span title={reviewSyncError?.message}>Sync failed</span>
+                ) : null}
+              </p>
+            ) : null}
           </div>
           <div className="topbar-actions">
             {sessions.length > 1 ? (

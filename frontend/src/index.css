@@ -183,17 +183,48 @@ button:disabled {
 
 .review-status {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #a8a8b3;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.review-status p {
+  margin: 0;
+  display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 8px;
-  color: #a8a8b3;
-  font-size: 13px;
 }
 
-.review-status strong {
+.review-status-primary strong {
   color: #f0f0f0;
   font-size: 20px;
   line-height: 1;
+  font-weight: 600;
+}
+
+.review-status-scorer {
+  color: #c4c4cf;
+}
+
+.review-status-context,
+.review-status-meta {
+  font-size: 12px;
+  color: #8f8f9a;
+}
+
+.review-status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-status-meta > span:not(:last-child)::after {
+  content: "·";
+  margin-left: 8px;
+  color: #5c5c66;
 }
 
 .topbar-actions {
