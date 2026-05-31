@@ -6,7 +6,7 @@ const GENERIC_REASON_DETAILS = new Set([
   'Flag returned by the backend fraud detector.',
 ])
 
-function hasDetailedReasons(transaction: TransactionFlag) {
+export function hasDetailedReasons(transaction: TransactionFlag) {
   return transaction.reasons.some(
     (reason) => !GENERIC_REASON_DETAILS.has(reason.detail),
   )

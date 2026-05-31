@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   EmptyTransactionDetail,
@@ -290,7 +296,15 @@ export function ReviewQueue({
     transactionIds: Set<string>;
   } | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const enrichedIdsRef = useRef(new Set<string>());
+  const [enrichedTransactionIds, setEnrichedTransactionIds] = useState(
+    () => new Set<string>(),
+  );
+  const [enrichmentFailedIds, setEnrichmentFailedIds] = useState(
+    () => new Set<string>(),
+  );
+  const [enrichingTransactionId, setEnrichingTransactionId] = useState<
+    string | null
+  >(null);
   const bootstrapQuery = useQuery({
     queryFn: () => fetchReviewBootstrap(fileHash, summary),
     queryKey: ["review-bootstrap", fileHash],
@@ -341,7 +355,9 @@ export function ReviewQueue({
     setModelById(new Map());
     setRelatedById(new Map());
     setLoadedQueueCount(0);
-    enrichedIdsRef.current = new Set();
+    setEnrichedTransactionIds(new Set());
+    setEnrichmentFailedIds(new Set());
+    setEnrichingTransactionId(null);
     setUseModel(false);
     setSortMode("active");
     setRiskTuningByMode(defaultRiskTuning);
@@ -371,8 +387,22 @@ export function ReviewQueue({
     );
   }, [bootstrapQuery.data]);
 
+  useLayoutEffect(() => {
+    if (!activeId) {
+      setEnrichingTransactionId(null);
+      return;
+    }
+
+    if (enrichedTransactionIds.has(activeId)) {
+      setEnrichingTransactionId(null);
+      return;
+    }
+
+    setEnrichingTransactionId(activeId);
+  }, [activeId, enrichedTransactionIds]);
+
   useEffect(() => {
-    if (!activeId || enrichedIdsRef.current.has(activeId)) {
+    if (!activeId || enrichedTransactionIds.has(activeId)) {
       return;
     }
 
@@ -482,9 +512,32 @@ export function ReviewQueue({
           });
         }
 
-        enrichedIdsRef.current.add(activeId);
+        setEnrichedTransactionIds((current) => {
+          const next = new Set(current);
+          next.add(activeId);
+          return next;
+        });
+        setEnrichmentFailedIds((current) => {
+          if (!current.has(activeId)) {
+            return current;
+          }
+
+          const next = new Set(current);
+          next.delete(activeId);
+          return next;
+        });
+        if (!cancelled) {
+          setEnrichingTransactionId(null);
+        }
       } catch {
-        // Keep the queue row visible even if detail enrichment fails.
+        if (!cancelled) {
+          setEnrichmentFailedIds((current) => {
+            const next = new Set(current);
+            next.add(activeId);
+            return next;
+          });
+          setEnrichingTransactionId(null);
+        }
       }
     }
 
@@ -493,7 +546,7 @@ export function ReviewQueue({
     return () => {
       cancelled = true;
     };
-  }, [activeId, fileHash, summary.mlModelAvailable]);
+  }, [activeId, enrichedTransactionIds, fileHash, summary.mlModelAvailable]);
 
   const flaggedTransactions = useMemo(
     () =>
@@ -645,6 +698,15 @@ export function ReviewQueue({
     visibleTransactions.find(
       (transaction) => transaction.transactionId === activeId,
     ) ?? visibleTransactions[0];
+  const isReasonsLoading = Boolean(
+    activeTransaction &&
+      enrichingTransactionId === activeTransaction.transactionId,
+  );
+  const reasonsLoadError = activeTransaction
+    ? enrichmentFailedIds.has(activeTransaction.transactionId)
+      ? "Could not load the risk breakdown for this transaction."
+      : null
+    : null;
 
   const reviewableTransactionIds = useMemo(
     () => new Set(transactions.map((transaction) => transaction.transactionId)),
@@ -1360,11 +1422,13 @@ export function ReviewQueue({
                   : null
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
+              isReasonsLoading={isReasonsLoading}
               onDecide={decide}
               onFilterCardCountry={filterByCardCountry}
               onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
+              reasonsLoadError={reasonsLoadError}
               reviewableTransactionIds={reviewableTransactionIds}
               transactions={networkTransactions}
               transaction={activeTransaction}

@@ -764,6 +764,47 @@ button:disabled {
   text-align: right;
 }
 
+.reason-list-skeleton {
+  border-top: 1px solid #2c2c33;
+}
+
+.reason-skeleton-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid #2c2c33;
+  padding: 10px 0;
+}
+
+.reason-skeleton-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reason-skeleton-line {
+  display: block;
+  border-radius: 4px;
+  background: #2c2c33;
+}
+
+.reason-skeleton-line-title {
+  width: 42%;
+  height: 14px;
+}
+
+.reason-skeleton-line-detail {
+  width: 88%;
+  height: 12px;
+}
+
+.reason-skeleton-line-weight {
+  width: 28px;
+  height: 14px;
+  justify-self: end;
+}
+
 .card-analysis-panel {
   border-top: 1px solid #2c2c33;
   padding-top: 14px;
