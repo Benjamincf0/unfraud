@@ -1,6 +1,6 @@
-# Fraud Hunter
+# Unfraudify
 
-Fraud Hunter is a **reviewer-first fraud triage app** built for the MCP Hacks challenge. It ingests a CSV of card transactions, scores every row for fraud risk, explains each alert in plain language, and gives a human reviewer a keyboard-driven queue to approve, dismiss, or escalate decisions.
+Unfraudify is a **reviewer-first fraud triage app** built for the MCP Hacks challenge. It ingests a CSV of card transactions, scores every row for fraud risk, explains each alert in plain language, and gives a human reviewer a keyboard-driven queue to approve, dismiss, or escalate decisions.
 
 **New here?** Start with the [documentation hub](docs/README.md) — it includes a non-technical [getting started guide](docs/getting-started.md) and an [architecture overview](docs/architecture.md) of how the frontend and backend work together.
 

@@ -989,6 +989,21 @@ export function ReviewQueue({
       ? "Could not load the risk breakdown for this transaction."
       : null
     : null;
+  const activeHeuristicTransaction = activeTransaction
+    ? (heuristicById.get(activeTransaction.transactionId) ??
+      (!useModel ? activeTransaction : null))
+    : null;
+  const activeModelTransaction =
+    activeTransaction && summary.mlModelAvailable
+      ? (modelById.get(activeTransaction.transactionId) ??
+        (useModel ? activeTransaction : null))
+      : null;
+  const isDetailModelScoringLoading = Boolean(
+    activeTransaction &&
+      summary.mlModelAvailable &&
+      !activeModelTransaction &&
+      isReasonsLoading,
+  );
 
   const reviewableTransactionIds = useMemo(() => {
     const source = useModel ? modelById : heuristicById;
@@ -1747,20 +1762,26 @@ export function ReviewQueue({
                   : null
               }
               decisionFeedback={activeDecisionFeedback}
+              heuristicTransaction={
+                activeHeuristicTransaction ?? activeTransaction
+              }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
+              isModelScoringLoading={isDetailModelScoringLoading}
               isReasonsLoading={isReasonsLoading}
+              mlModelAvailable={summary.mlModelAvailable}
               modelThreshold={summary.modelThreshold}
+              modelTransaction={activeModelTransaction}
               onDecide={decide}
               onDecisionFeedbackChange={updateDecisionFeedback}
               onFilterCardCountry={filterByCardCountry}
               onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
+              queueUseModel={useModel}
               reasonsLoadError={reasonsLoadError}
               reviewableTransactionIds={reviewableTransactionIds}
               transactions={networkTransactions}
               transaction={activeTransaction}
-              useModel={useModel}
             />
           ) : (
             <EmptyTransactionDetail />
