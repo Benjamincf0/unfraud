@@ -11,6 +11,21 @@ import type { DecisionAction, ReviewDecision, TransactionFlag } from '../types'
 
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
+type SearchFieldKey =
+  | 'transaction_id'
+  | 'timestamp'
+  | 'card_id'
+  | 'amount'
+  | 'merchant_name'
+  | 'merchant_category'
+  | 'channel'
+  | 'cardholder_country'
+  | 'merchant_country'
+  | 'device_id'
+  | 'ip_address'
+
+type SearchMode = 'all' | 'single' | 'custom'
+
 type ReviewQueueProps = {
   activeFileHash: string
   fileHash: string
@@ -38,6 +53,89 @@ const shortcutOptions = [
   { keys: 'U', label: 'Undo' },
 ]
 
+const SEARCH_FIELDS: Array<{
+  key: SearchFieldKey
+  label: string
+  values: (transaction: TransactionFlag) => string[]
+}> = [
+  {
+    key: 'transaction_id',
+    label: 'transaction_id',
+    values: (transaction) => [transaction.transactionId],
+  },
+  {
+    key: 'timestamp',
+    label: 'timestamp',
+    values: (transaction) => {
+      const values = [transaction.timestamp]
+      const date = new Date(transaction.timestamp)
+      if (!Number.isNaN(date.getTime())) {
+        values.push(date.toISOString().slice(0, 10))
+        values.push(
+          date.toLocaleDateString(undefined, {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          }),
+        )
+      }
+
+      return values
+    },
+  },
+  {
+    key: 'card_id',
+    label: 'card_id',
+    values: (transaction) => [transaction.cardId],
+  },
+  {
+    key: 'amount',
+    label: 'amount',
+    values: (transaction) => [
+      String(transaction.amount),
+      transaction.amount.toFixed(2),
+      `$${transaction.amount.toFixed(2)}`,
+    ],
+  },
+  {
+    key: 'merchant_name',
+    label: 'merchant_name',
+    values: (transaction) => [transaction.merchantName],
+  },
+  {
+    key: 'merchant_category',
+    label: 'merchant_category',
+    values: (transaction) => [transaction.merchantCategory],
+  },
+  {
+    key: 'channel',
+    label: 'channel',
+    values: (transaction) => [transaction.channel],
+  },
+  {
+    key: 'cardholder_country',
+    label: 'cardholder_country',
+    values: (transaction) => [transaction.cardholderCountry],
+  },
+  {
+    key: 'merchant_country',
+    label: 'merchant_country',
+    values: (transaction) => [transaction.merchantCountry],
+  },
+  {
+    key: 'device_id',
+    label: 'device_id',
+    values: (transaction) => [transaction.deviceId ?? ''],
+  },
+  {
+    key: 'ip_address',
+    label: 'ip_address',
+    values: (transaction) => [transaction.ipAddress ?? ''],
+  },
+]
+
+const SEARCH_FIELD_MAP = new Map(SEARCH_FIELDS.map((field) => [field.key, field]))
+
 export function ReviewQueue({
   activeFileHash,
   fileHash,
@@ -51,6 +149,13 @@ export function ReviewQueue({
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
+  const [searchMode, setSearchMode] = useState<SearchMode>('all')
+  const [singleField, setSingleField] = useState<SearchFieldKey>('transaction_id')
+  const [customFields, setCustomFields] = useState<SearchFieldKey[]>([
+    'transaction_id',
+    'card_id',
+    'merchant_name',
+  ])
   const [history, setHistory] = useState<DecisionAction[]>([])
   const [networkFocus, setNetworkFocus] = useState<{
     label: string
@@ -63,31 +168,77 @@ export function ReviewQueue({
     mutationFn: submitReviewDecision,
   })
 
-  const visibleTransactions = useMemo(() => {
+  const searchScopeKeys = useMemo(() => {
+    if (searchMode === 'single') {
+      return [singleField]
+    }
+
+    if (searchMode === 'custom') {
+      return customFields.length > 0
+        ? customFields
+        : SEARCH_FIELDS.map((field) => field.key)
+    }
+
+    return SEARCH_FIELDS.map((field) => field.key)
+  }, [customFields, searchMode, singleField])
+
+  const visibleEntries = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
 
-    return transactions.filter((transaction) => {
-      const filterPasses =
-        filter === 'all' ? true : transaction.decision === filter
-      const networkPasses = networkFocus
-        ? networkFocus.transactionIds.has(transaction.transactionId)
-        : true
-      const queryPasses = normalizedQuery
-        ? [
-            transaction.transactionId,
-            transaction.cardId,
-            transaction.merchantName,
-            transaction.merchantCategory,
-            transaction.merchantCountry,
-          ]
-            .join(' ')
-            .toLowerCase()
-            .includes(normalizedQuery)
-        : true
+    return transactions
+      .map((transaction) => {
+        const filterPasses =
+          filter === 'all' ? true : transaction.decision === filter
+        const networkPasses = networkFocus
+          ? networkFocus.transactionIds.has(transaction.transactionId)
+          : true
 
-      return filterPasses && networkPasses && queryPasses
-    })
-  }, [filter, networkFocus, query, transactions])
+        let matchedFieldLabels: string[] = []
+
+        if (normalizedQuery) {
+          matchedFieldLabels = searchScopeKeys
+            .flatMap((key) => {
+              const field = SEARCH_FIELD_MAP.get(key)
+              if (!field) {
+                return []
+              }
+
+              const hasMatch = field
+                .values(transaction)
+                .some((value) => value.toLowerCase().includes(normalizedQuery))
+
+              return hasMatch ? [field.label] : []
+            })
+            .filter((value, index, array) => array.indexOf(value) === index)
+        }
+
+        const queryPasses =
+          !normalizedQuery || matchedFieldLabels.length > 0
+
+        return {
+          matchedFieldLabels,
+          transaction,
+          visible: filterPasses && networkPasses && queryPasses,
+        }
+      })
+      .filter((entry) => entry.visible)
+  }, [filter, networkFocus, query, searchScopeKeys, transactions])
+
+  const visibleTransactions = useMemo(
+    () => visibleEntries.map((entry) => entry.transaction),
+    [visibleEntries],
+  )
+
+  const matchFieldsByTransactionId = useMemo(
+    () =>
+      new Map(
+        visibleEntries.map((entry) => [
+          entry.transaction.transactionId,
+          entry.matchedFieldLabels,
+        ]),
+      ),
+    [visibleEntries],
+  )
 
   const activeTransaction =
     visibleTransactions.find((transaction) => transaction.transactionId === activeId) ??
@@ -126,6 +277,9 @@ export function ReviewQueue({
     setTransactions(items)
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
+    setSearchMode('all')
+    setSingleField('transaction_id')
+    setCustomFields(['transaction_id', 'card_id', 'merchant_name'])
     setNetworkFocus(null)
     setHistory([])
   }, [fileHash, items])
@@ -148,6 +302,14 @@ export function ReviewQueue({
     },
     [transactions],
   )
+
+  const toggleCustomField = (key: SearchFieldKey) => {
+    setCustomFields((current) =>
+      current.includes(key)
+        ? current.filter((value) => value !== key)
+        : [...current, key],
+    )
+  }
 
   const decide = useCallback(
     (
@@ -246,7 +408,7 @@ export function ReviewQueue({
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
 
-      if (target?.matches('input, textarea, select')) {
+      if (target?.matches('input, textarea, select, button')) {
         return
       }
 
@@ -313,12 +475,47 @@ export function ReviewQueue({
                 ))}
               </select>
             ) : null}
-            <Input
-              aria-label="Search transactions"
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search transaction"
-              value={query}
-            />
+            <div className="search-toolbar">
+              <Input
+                aria-label="Search transactions"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search all columns"
+                value={query}
+              />
+              <label className="search-control compact" htmlFor="search-mode-select">
+                <span>Scope</span>
+                <select
+                  className="search-select"
+                  id="search-mode-select"
+                  onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+                  value={searchMode}
+                >
+                  <option value="all">All columns</option>
+                  <option value="single">One column</option>
+                  <option value="custom">Custom set</option>
+                </select>
+              </label>
+
+              {searchMode === 'single' ? (
+                <label className="search-control compact" htmlFor="single-column-select">
+                  <span>Column</span>
+                  <select
+                    className="search-select"
+                    id="single-column-select"
+                    onChange={(event) =>
+                      setSingleField(event.target.value as SearchFieldKey)
+                    }
+                    value={singleField}
+                  >
+                    {SEARCH_FIELDS.map((field) => (
+                      <option key={field.key} value={field.key}>
+                        {field.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
             <Button
               disabled={history.length === 0}
               onClick={undo}
@@ -349,6 +546,25 @@ export function ReviewQueue({
             options={filterOptions}
             value={filter}
           />
+
+          {searchMode === 'custom' ? (
+            <div className="search-custom-fields" aria-label="Custom search columns">
+              {SEARCH_FIELDS.map((field) => {
+                const selected = customFields.includes(field.key)
+
+                return (
+                  <button
+                    className={selected ? 'search-chip search-chip-active' : 'search-chip'}
+                    key={field.key}
+                    onClick={() => toggleCustomField(field.key)}
+                    type="button"
+                  >
+                    {field.label}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
         </div>
 
         <div className="shortcut-strip" aria-label="Keyboard shortcuts">
@@ -363,7 +579,9 @@ export function ReviewQueue({
         <div className="review-layout">
           <QueueList
             activeTransactionId={activeTransaction?.transactionId}
+            matchFieldsByTransactionId={matchFieldsByTransactionId}
             onSelect={setActiveId}
+            searchQuery={query}
             transactions={visibleTransactions}
           />
 
