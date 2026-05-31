@@ -256,6 +256,65 @@ tx_002,2026-04-25T00:01:00,card_001,50.0,Store B,grocery,online,CA,US,dev_123,1.
     )
     assert response.status_code == 400
 
+
+def test_escalated_review_ip_updates_scoring():
+    csv_data = """transaction_id,timestamp,card_id,amount,merchant_name,merchant_category,channel,cardholder_country,merchant_country,device_id,ip_address
+tx_feedback_001,2026-04-25T00:00:00,card_feedback_001,10.0,Corner Shop,grocery,online,US,US,dev_feedback_001,8.8.8.8
+tx_feedback_002,2026-04-25T00:01:00,card_feedback_002,12.0,Corner Shop,grocery,online,US,US,dev_feedback_002,8.8.8.8
+tx_feedback_003,2026-04-25T00:02:00,card_feedback_003,11.0,Corner Shop,grocery,online,US,US,dev_feedback_003,7.7.7.7
+"""
+
+    response = client.post(
+        "/upload",
+        files={"file": ("feedback.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200
+    file_hash = response.json()["file_hash"]
+
+    response = client.get(
+        f"/analysis/transaction/{file_hash}/tx_feedback_002",
+    )
+    assert response.status_code == 200
+    baseline = response.json()["heuristic"]
+    baseline_score = baseline["fraud_score"]
+    assert "Previously escalated IP" not in baseline["reasons"]
+
+    response = client.post(
+        f"/review/{file_hash}/tx_feedback_001/escalate",
+        json={"action": "escalate", "reviewer_notes": "Suspicious IP"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        f"/analysis/transaction/{file_hash}/tx_feedback_002",
+    )
+    assert response.status_code == 200
+    updated = response.json()["heuristic"]
+    assert updated["is_fraud"] is True
+    assert updated["fraud_score"] > baseline_score
+    assert "Previously escalated IP" in updated["reasons"]
+    assert any(
+        reason["code"] == "review_escalated_ip"
+        for reason in updated["score_breakdown"]
+    )
+    assert (
+        updated["cross_card_signals"]["review_escalated_ip_transactions"] == 1
+    )
+
+    response = client.post(
+        f"/review/{file_hash}/tx_feedback_001/pending",
+        json={"action": "pending"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        f"/analysis/transaction/{file_hash}/tx_feedback_002",
+    )
+    assert response.status_code == 200
+    reverted = response.json()["heuristic"]
+    assert "Previously escalated IP" not in reverted["reasons"]
+    assert reverted["fraud_score"] == baseline_score
+
 def test_error_conditions():
     """Test error handling"""
     # Test with non-existent file hash

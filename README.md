@@ -59,6 +59,7 @@ The default **heuristic** scorer in `backend/fraud_scorer.py` uses weighted rule
 - **Per-card baselines:** historical median/mean/std amount, prior category/device/IP/country usage, and transaction count before the current row.
 - **Per-card × merchant_category baselines:** amount ratio and z-score within the same category on that card.
 - **Cross-card signals:** shared device fanout, shared IP fanout, merchant transaction bursts over 30 minutes, and unique-card merchant bursts over 2 hours.
+- **Reviewer feedback:** when a reviewer escalates a transaction, other rows sharing that IP receive a session risk boost and a “Previously escalated IP” explanation.
 - **Geo scoring is conditional:** cross-border alone does not flag; it must pair with amount or identity anomalies, or be a first-seen merchant country for the card.
 - **Explainability:** every scored transaction carries ordered reason objects with labels, details, weights, signal type, observed value, and baseline.
 
@@ -79,7 +80,7 @@ The React UI opens into a working review queue after upload. Reviewers can searc
 | `e` | Escalate |
 | `u` | Undo |
 
-Review actions sync to the backend, appear in an in-session audit log, and are included in exported CSVs.
+Review actions sync to the backend, appear in an in-session audit log, update shared-IP risk when escalated, and are included in exported CSVs.
 
 ## With another week
 

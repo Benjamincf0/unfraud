@@ -362,9 +362,31 @@ export function ReviewQueue({
       setHistory(variables.rollbackHistory);
       setActiveId(variables.transactionId);
     },
-    onSuccess: () => {
+    onSuccess: async (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["review-log", fileHash] });
       queryClient.invalidateQueries({ queryKey: ["review-summary", fileHash] });
+
+      const escalationChanged =
+        variables.decision === "escalated" ||
+        variables.previousDecision === "escalated";
+
+      if (!escalationChanged) {
+        return;
+      }
+
+      const refreshedSummary = await fetchReviewSummary(fileHash);
+      queryClient.setQueryData(["review-summary", fileHash], refreshedSummary);
+      const refreshedQueue = await fetchFullReviewQueue(
+        fileHash,
+        refreshedSummary,
+      );
+
+      setHeuristicById(buildTransactionIndex(refreshedQueue.heuristic));
+      setModelById(buildTransactionIndex(refreshedQueue.model));
+      setRelatedById(new Map());
+      setEnrichedTransactionIds(new Set());
+      setEnrichmentFailedIds(new Set());
+      detailInFlightRef.current = new Map();
     },
   });
   const reviewLogQuery = useQuery({

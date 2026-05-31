@@ -63,9 +63,20 @@ These detect patterns that involve **many cards**:
 
 High fanout or bursts suggest stolen credentials, merchant compromise, or bot activity.
 
+## Reviewer feedback
+
+Reviewer escalation feeds back into the session scorer. When a reviewer escalates a transaction with an `ip_address`, every row sharing that IP receives an additional review-feedback signal:
+
+- **Label:** “Previously escalated IP”
+- **Score impact:** +0.22, capped at 1.0
+- **Flag behavior:** the matching rows are treated as fraud candidates immediately
+- **Undo behavior:** returning the escalated transaction to pending removes the feedback boost
+
+This is intentionally session-local. It helps the reviewer chase an active suspicious IP without permanently changing the base heuristic model.
+
 ## How the final score is built
 
-Eight **components** contribute weighted risk (each capped, then summed and clipped to [0, 1]):
+Core heuristic **components** contribute weighted risk (each capped, then summed and clipped to [0, 1]):
 
 | Component | What it captures | Approx. weight in blend |
 |-----------|------------------|-------------------------|

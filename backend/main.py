@@ -25,6 +25,8 @@ uploaded_files: Dict[str, pd.DataFrame] = {}
 analysis_cache: Dict[str, pd.DataFrame] = {}
 review_log: Dict[str, Dict[str, Any]] = {}
 
+REVIEW_ESCALATED_IP_RISK = 0.22
+
 # Pydantic models
 class UploadResponse(BaseModel):
     file_hash: str
@@ -266,13 +268,18 @@ def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd
         analyzed_df["reviewed_at"] = ""
         return analyzed_df
 
-    return analyzed_df.merge(review_df, on="transaction_id", how="left").fillna(
+    analyzed_with_reviews = analyzed_df.merge(
+        review_df,
+        on="transaction_id",
+        how="left",
+    ).fillna(
         {
             "review_decision": "",
             "reviewer_notes": "",
             "reviewed_at": "",
         }
     )
+    return _apply_review_feedback(analyzed_with_reviews, review_df)
 
 
 def _parse_fraud_reasons(value: Any) -> List[str]:
@@ -310,6 +317,131 @@ def _normalize_review_decision(value: Any) -> str:
     if decision in {"escalate", "escalated"}:
         return "escalated"
     return "pending"
+
+
+def _append_unique_reason(reason_text: Any, label: str) -> str:
+    reasons = _parse_fraud_reasons(reason_text)
+    if label not in reasons:
+        reasons.append(label)
+    return "; ".join(reasons)
+
+
+def _append_score_signal(score_breakdown: Any, signal: Dict[str, Any]) -> str:
+    breakdown = _parse_json_field(score_breakdown, [])
+    if not isinstance(breakdown, list):
+        breakdown = []
+    if not any(
+        isinstance(item, dict) and item.get("code") == signal["code"]
+        for item in breakdown
+    ):
+        breakdown.append(signal)
+    breakdown.sort(
+        key=lambda item: float(item.get("weight", 0))
+        if isinstance(item, dict)
+        else 0,
+        reverse=True,
+    )
+    return json.dumps(breakdown)
+
+
+def _merge_json_object(value: Any, updates: Dict[str, Any]) -> str:
+    payload = _parse_json_field(value, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(updates)
+    return json.dumps(payload)
+
+
+def _apply_review_feedback(
+    analyzed_df: pd.DataFrame,
+    review_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Boost rows that reuse an IP a reviewer has escalated in this session."""
+    if review_df.empty or "ip_address" not in analyzed_df.columns:
+        return analyzed_df
+
+    feedback_df = analyzed_df.copy()
+    review_decisions = review_df["review_decision"].map(_normalize_review_decision)
+    escalated_ids = set(
+        review_df.loc[review_decisions == "escalated", "transaction_id"].astype(str)
+    )
+    if not escalated_ids:
+        return feedback_df
+
+    source_rows = feedback_df[
+        feedback_df["transaction_id"].astype(str).isin(escalated_ids)
+        & feedback_df["ip_address"].notna()
+        & (feedback_df["ip_address"].astype(str).str.strip() != "")
+    ]
+    if source_rows.empty:
+        return feedback_df
+
+    escalated_ip_context: Dict[str, Dict[str, Any]] = {}
+    for ip_address, group in source_rows.groupby("ip_address", sort=False):
+        ip_key = str(ip_address).strip()
+        if not ip_key:
+            continue
+        escalated_ip_context[ip_key] = {
+            "cards": sorted(group["card_id"].astype(str).unique().tolist()),
+            "transaction_ids": sorted(
+                group["transaction_id"].astype(str).unique().tolist()
+            ),
+        }
+
+    if not escalated_ip_context:
+        return feedback_df
+
+    ip_series = feedback_df["ip_address"].fillna("").astype(str).str.strip()
+    affected_mask = ip_series.isin(escalated_ip_context)
+    if not affected_mask.any():
+        return feedback_df
+
+    for index, row in feedback_df.loc[affected_mask].iterrows():
+        ip_address = str(row["ip_address"]).strip()
+        context = escalated_ip_context[ip_address]
+        transaction_count = len(context["transaction_ids"])
+        card_count = len(context["cards"])
+        previous_score = float(row["fraud_score"])
+        next_score = min(1.0, previous_score + REVIEW_ESCALATED_IP_RISK)
+        signal = {
+            "code": "review_escalated_ip",
+            "label": "Previously escalated IP",
+            "detail": (
+                f"Reviewer escalated {transaction_count} transaction(s) from IP "
+                f"'{ip_address}' across {card_count} card(s) in this session."
+            ),
+            "weight": REVIEW_ESCALATED_IP_RISK,
+            "signal_type": "review_feedback",
+            "value": transaction_count,
+            "baseline": 0.0,
+        }
+
+        feedback_df.at[index, "fraud_score"] = round(next_score, 4)
+        feedback_df.at[index, "is_fraud"] = True
+        feedback_df.at[index, "fraud_reasons"] = _append_unique_reason(
+            row.get("fraud_reasons"),
+            "Previously escalated IP",
+        )
+        feedback_df.at[index, "score_breakdown"] = _append_score_signal(
+            row.get("score_breakdown"),
+            signal,
+        )
+        feedback_df.at[index, "cross_card_signals_json"] = _merge_json_object(
+            row.get("cross_card_signals_json"),
+            {
+                "review_escalated_ip_transactions": transaction_count,
+                "review_escalated_ip_card_count": card_count,
+            },
+        )
+        feedback_df.at[index, "graph_features_json"] = _merge_json_object(
+            row.get("graph_features_json"),
+            {
+                "review_escalated_ip_transactions": float(transaction_count),
+                "review_escalated_ip_card_count": float(card_count),
+            },
+        )
+
+    return feedback_df
 
 
 def _flagged_queue_stats(file_hash: str, use_model: bool = False) -> FlaggedQueueStats:
@@ -595,7 +727,7 @@ async def get_related_transactions(
 
 @app.get("/analysis/all/{file_hash}")
 async def get_all_analysis(file_hash: str, use_model: bool = False):
-    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
     return [_to_fraud_analysis(row) for _, row in analyzed_df.iterrows()]
 
 def row_to_analyzed_transaction(row: Any) -> AnalyzedTransaction:
@@ -623,7 +755,7 @@ def row_to_analyzed_transaction(row: Any) -> AnalyzedTransaction:
 
 @app.get("/analysis/user/{file_hash}/{card_id}", response_model=List[AnalyzedTransaction])
 async def get_user_analysis(file_hash: str, card_id: str, use_model: bool = False):
-    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
     user_df = analyzed_df[analyzed_df["card_id"] == card_id]
     if user_df.empty:
         raise HTTPException(status_code=404, detail="No transactions found for this card")
@@ -634,7 +766,7 @@ async def get_user_analysis(file_hash: str, card_id: str, use_model: bool = Fals
 
 @app.get("/analysis/ip/{file_hash}/{ip_address}")
 async def get_ip_analysis(file_hash: str, ip_address: str, use_model: bool = False):
-    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
     ip_df = analyzed_df[analyzed_df["ip_address"] == ip_address]
     if ip_df.empty:
         raise HTTPException(status_code=404, detail="No transactions found for this IP")
