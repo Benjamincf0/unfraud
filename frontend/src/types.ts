@@ -5,6 +5,7 @@ export type RiskReason = {
   label: string
   detail: string
   weight: number
+  signalType?: 'per_card' | 'cross_card' | 'composite' | string
 }
 
 export type TransactionFlag = {
@@ -22,6 +23,8 @@ export type TransactionFlag = {
   score: number
   label: 'critical' | 'high' | 'medium' | 'low'
   decision: ReviewDecision
+  reviewedAt?: string
+  reviewerNotes?: string
   reasons: RiskReason[]
   cardContext: {
     medianAmount: number
@@ -65,4 +68,5 @@ export type DecisionAction = {
   transactionId: string
   previousDecision: ReviewDecision
   nextDecision: Exclude<ReviewDecision, 'pending'>
+  actedAt: string
 }
