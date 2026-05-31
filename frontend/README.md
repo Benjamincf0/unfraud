@@ -65,10 +65,10 @@ Undo sends `pending`, which clears the review record on the backend.
 ### Export
 
 ```text
-GET /export/{hash}?use_model=false
+GET /export/{hash}?use_model=false|true
 ```
 
-Returns the full analyzed CSV with review columns. The live UI does not use export for session restore — it reconnects via summary + queue as long as the backend still holds the upload in memory.
+Returns the full analyzed CSV with review columns. Uses heuristic scoring when `use_model=false`, or the **hybrid** queue (ML alert **or** strong heuristic ≥ 0.55) when `use_model=true` — same rule as `make export`. The live UI does not use export for session restore — it reconnects via summary + queue as long as the backend still holds the upload in memory.
 
 ## Browser persistence
 

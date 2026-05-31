@@ -28,6 +28,7 @@ export type ReviewSummary = {
   alertOnlyCount: number
   modelAlertBothCount: number
   softRuleOnlyCount: number
+  heuristicBoostCount: number
 }
 
 export type ReviewSessionData = {

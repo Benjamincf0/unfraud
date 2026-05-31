@@ -1,6 +1,6 @@
 # Heuristic (rules-based) scoring
 
-This is the **default** engine used by the live API and by `make export`. It lives in `fraud_scorer.py` and does **not** need labeled fraud data or a `.pkl` model file.
+This is the **default** engine used by the live API when `use_model=false`. It also feeds the offline hybrid export (`make export`), which can flag rows on a strong heuristic score even when ML alert rules do not fire. It lives in `fraud_scorer.py` and does **not** need labeled fraud data or a `.pkl` model file.
 
 ## Idea in plain language
 

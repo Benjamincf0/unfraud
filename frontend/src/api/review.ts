@@ -41,6 +41,7 @@ type BackendSummaryResponse = {
   alert_only_count?: number
   model_alert_both_count?: number
   soft_rule_only_count?: number
+  heuristic_boost_count?: number
 }
 
 type BackendQueuePageResponse = {
@@ -292,6 +293,7 @@ export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummar
     alertOnlyCount: payload.alert_only_count ?? 0,
     modelAlertBothCount: payload.model_alert_both_count ?? 0,
     softRuleOnlyCount: payload.soft_rule_only_count ?? 0,
+    heuristicBoostCount: payload.heuristic_boost_count ?? 0,
   }
 }
 

@@ -1048,7 +1048,7 @@ export function ReviewQueue({
     activeQueueStats.approved +
     activeQueueStats.dismissed +
     activeQueueStats.escalated;
-  const scorerLabel = useModel ? "ML model" : "Heuristic";
+  const scorerLabel = useModel ? "Hybrid" : "Heuristic";
   const activeQueueProgress = useModel
     ? {
         loaded: queueLoad.progress.modelLoaded,
@@ -1425,7 +1425,8 @@ export function ReviewQueue({
               <p className="review-status-ml-breakdown">
                 Queue: {summary.modelFlaggedCount} · model-only{' '}
                 {summary.modelOnlyCount} · alert-only {summary.alertOnlyCount} ·
-                both {summary.modelAlertBothCount} · elevated (soft rule only){' '}
+                both {summary.modelAlertBothCount} · heuristic boost{' '}
+                {summary.heuristicBoostCount} · elevated (soft rule only){' '}
                 {summary.softRuleOnlyCount}
                 {summary.modelThreshold != null
                   ? ` · model bar ${Math.round(summary.modelThreshold * 100)}%`
@@ -1564,14 +1565,14 @@ export function ReviewQueue({
               Audit Log
             </Button>
             <Button
-              aria-label="Download analyzed transactions CSV"
+              aria-label={`Download analyzed transactions CSV (${scorerLabel})`}
               disabled={exportMutation.isPending}
               onClick={() => exportMutation.mutate()}
               size="sm"
-              title="Download analyzed transactions CSV"
+              title={`Download CSV using ${scorerLabel} scorer`}
               variant="outline"
             >
-              {exportMutation.isPending ? "Exporting" : "Export CSV"}
+              {exportMutation.isPending ? "Exporting" : `Export CSV (${scorerLabel})`}
             </Button>
             {networkFocus ? (
               <Button
@@ -1691,7 +1692,7 @@ export function ReviewQueue({
                     : "scoring-toggle-label"
                 }
               >
-                ML model
+                Hybrid
               </span>
             </div>
           </div>
