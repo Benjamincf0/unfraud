@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { EmptyTransactionDetail, TransactionDetail } from './review/TransactionDetail'
 import { QueueList } from './review/QueueList'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+import { Slider } from './ui/slider'
 import { Tabs } from './ui/tabs'
-import { fetchCardAnalysis, submitReviewDecision } from '../api/review'
+import {
+  fetchCardAnalysis,
+  fetchReviewLog,
+  submitReviewDecision,
+} from '../api/review'
 import type { ReviewSession } from '../lib/reviewSessions'
-import type { DecisionAction, ReviewDecision, TransactionFlag } from '../types'
+import type {
+  DecisionAction,
+  ReviewDecision,
+  ReviewLogEntry,
+  TransactionFlag,
+} from '../types'
 
 type QueueFilter = 'pending' | 'all' | 'approved' | 'dismissed' | 'escalated'
 
@@ -28,6 +38,7 @@ type SearchMode = 'all' | 'single' | 'custom'
 
 type ReviewQueueProps = {
   activeFileHash: string
+  allItems: TransactionFlag[]
   fileHash: string
   items: TransactionFlag[]
   onReset: () => void
@@ -135,9 +146,90 @@ const SEARCH_FIELDS: Array<{
 ]
 
 const SEARCH_FIELD_MAP = new Map(SEARCH_FIELDS.map((field) => [field.key, field]))
+const neutralFalsePositiveCost = 5
+
+function getEffectiveRiskThreshold(
+  riskThreshold: number,
+  falsePositiveCost: number,
+) {
+  return Math.min(
+    95,
+    Math.max(0, riskThreshold + (falsePositiveCost - neutralFalsePositiveCost) * 5),
+  )
+}
+
+function AuditLog({
+  entries,
+  error,
+  isLoading,
+  onSelectTransaction,
+  reviewableTransactionIds,
+}: {
+  entries: ReviewLogEntry[]
+  error: string | null
+  isLoading: boolean
+  onSelectTransaction: (transactionId: string) => void
+  reviewableTransactionIds: Set<string>
+}) {
+  const visibleEntries = entries.slice(0, 8)
+
+  return (
+    <section className="audit-log" aria-label="Review audit log">
+      <div className="audit-log-header">
+        <strong>Audit log</strong>
+        <span>
+          {error
+            ? 'Could not load'
+            : isLoading
+            ? 'Refreshing'
+            : `${entries.length} decisions`}
+        </span>
+      </div>
+      <div className="audit-log-list">
+        {visibleEntries.length === 0 ? (
+          <span className="audit-log-empty">No review decisions yet.</span>
+        ) : (
+          visibleEntries.map((entry) => {
+            const canSelect = reviewableTransactionIds.has(entry.transactionId)
+
+            return (
+              <button
+                className="audit-log-row"
+                disabled={!canSelect}
+                key={`${entry.transactionId}-${entry.reviewedAt}`}
+                onClick={() => onSelectTransaction(entry.transactionId)}
+                type="button"
+              >
+                <strong>{entry.action}</strong>
+                <span>{entry.transactionId}</span>
+                <time dateTime={entry.reviewedAt}>
+                  {formatAuditTime(entry.reviewedAt)}
+                </time>
+              </button>
+            )
+          })
+        )}
+      </div>
+    </section>
+  )
+}
+
+function formatAuditTime(value: string) {
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
 
 export function ReviewQueue({
   activeFileHash,
+  allItems,
   fileHash,
   items,
   onReset,
@@ -145,10 +237,15 @@ export function ReviewQueue({
   sessions,
   useModel,
 }: ReviewQueueProps) {
+  const queryClient = useQueryClient()
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
   const [filter, setFilter] = useState<QueueFilter>('pending')
   const [query, setQuery] = useState('')
+  const [riskThreshold, setRiskThreshold] = useState(0)
+  const [falsePositiveCost, setFalsePositiveCost] = useState(
+    neutralFalsePositiveCost,
+  )
   const [searchMode, setSearchMode] = useState<SearchMode>('all')
   const [singleField, setSingleField] = useState<SearchFieldKey>('transaction_id')
   const [customFields, setCustomFields] = useState<SearchFieldKey[]>([
@@ -167,7 +264,19 @@ export function ReviewQueue({
     mutate: syncReviewDecision,
   } = useMutation({
     mutationFn: submitReviewDecision,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['review-log', fileHash] })
+    },
   })
+  const reviewLogQuery = useQuery({
+    enabled: Boolean(fileHash),
+    queryFn: () => fetchReviewLog(fileHash),
+    queryKey: ['review-log', fileHash],
+  })
+  const effectiveRiskThreshold = useMemo(
+    () => getEffectiveRiskThreshold(riskThreshold, falsePositiveCost),
+    [falsePositiveCost, riskThreshold],
+  )
 
   const searchScopeKeys = useMemo(() => {
     if (searchMode === 'single') {
@@ -190,6 +299,7 @@ export function ReviewQueue({
       .map((transaction) => {
         const filterPasses =
           filter === 'all' ? true : transaction.decision === filter
+        const thresholdPasses = transaction.score * 100 >= effectiveRiskThreshold
         const networkPasses = networkFocus
           ? networkFocus.transactionIds.has(transaction.transactionId)
           : true
@@ -219,11 +329,18 @@ export function ReviewQueue({
         return {
           matchedFieldLabels,
           transaction,
-          visible: filterPasses && networkPasses && queryPasses,
+          visible: filterPasses && thresholdPasses && networkPasses && queryPasses,
         }
       })
       .filter((entry) => entry.visible)
-  }, [filter, networkFocus, query, searchScopeKeys, transactions])
+  }, [
+    effectiveRiskThreshold,
+    filter,
+    networkFocus,
+    query,
+    searchScopeKeys,
+    transactions,
+  ])
 
   const visibleTransactions = useMemo(
     () => visibleEntries.map((entry) => entry.transaction),
@@ -273,11 +390,20 @@ export function ReviewQueue({
       >,
     )
   }, [transactions])
+  const tunedQueueCount = useMemo(
+    () =>
+      transactions.filter(
+        (transaction) => transaction.score * 100 >= effectiveRiskThreshold,
+      ).length,
+    [effectiveRiskThreshold, transactions],
+  )
 
   useEffect(() => {
     setTransactions(items)
     setActiveId(items[0]?.transactionId ?? '')
     setFilter('pending')
+    setRiskThreshold(0)
+    setFalsePositiveCost(neutralFalsePositiveCost)
     setSearchMode('all')
     setSingleField('transaction_id')
     setCustomFields(['transaction_id', 'card_id', 'merchant_name'])
@@ -456,6 +582,7 @@ export function ReviewQueue({
             <strong>{queueStats.pending}</strong>
             <span>pending</span>
             <span>{visibleTransactions.length} shown</span>
+            <span>{tunedQueueCount} tuned</span>
             <span>{transactions.length} in queue</span>
             {networkFocus ? <span>network: {networkFocus.label}</span> : null}
             {reviewSyncFailed ? <span>Sync failed</span> : null}
@@ -573,6 +700,35 @@ export function ReviewQueue({
             value={filter}
           />
 
+          <div className="tuning-controls" aria-label="Queue tuning controls">
+            <label className="tuning-control">
+              <span>Risk threshold</span>
+              <Slider
+                aria-label="Risk threshold"
+                max={95}
+                min={0}
+                onChange={(event) => setRiskThreshold(Number(event.target.value))}
+                step={5}
+                value={riskThreshold}
+              />
+              <strong>{Math.round(effectiveRiskThreshold)}%</strong>
+            </label>
+            <label className="tuning-control">
+              <span>False positive cost</span>
+              <Slider
+                aria-label="False positive cost"
+                max={9}
+                min={1}
+                onChange={(event) =>
+                  setFalsePositiveCost(Number(event.target.value))
+                }
+                step={1}
+                value={falsePositiveCost}
+              />
+              <strong>{falsePositiveCost}</strong>
+            </label>
+          </div>
+
           {searchMode === 'custom' ? (
             <div className="search-custom-fields" aria-label="Custom search columns">
               {SEARCH_FIELDS.map((field) => {
@@ -592,6 +748,18 @@ export function ReviewQueue({
             </div>
           ) : null}
         </div>
+
+        <AuditLog
+          entries={reviewLogQuery.data ?? []}
+          error={
+            reviewLogQuery.error instanceof Error
+              ? reviewLogQuery.error.message
+              : null
+          }
+          isLoading={reviewLogQuery.isFetching}
+          onSelectTransaction={setActiveId}
+          reviewableTransactionIds={reviewableTransactionIds}
+        />
 
         <div className="review-layout">
           <QueueList
@@ -615,7 +783,7 @@ export function ReviewQueue({
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
               reviewableTransactionIds={reviewableTransactionIds}
-              transactions={transactions}
+              transactions={allItems}
               transaction={activeTransaction}
             />
           ) : (

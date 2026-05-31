@@ -112,6 +112,7 @@ function App() {
   return (
     <ReviewQueue
       activeFileHash={activeReviewData.fileHash}
+      allItems={activeReviewData.allItems}
       fileHash={activeReviewData.fileHash}
       items={activeReviewData.items}
       onReset={showUploadScreen}

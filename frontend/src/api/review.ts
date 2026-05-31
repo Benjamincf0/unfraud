@@ -7,6 +7,7 @@ import type {
 } from '../types'
 
 export type ReviewDataResult = {
+  allItems: TransactionFlag[]
   fileHash: string
   items: TransactionFlag[]
   source: 'cache' | 'upload'
@@ -133,6 +134,7 @@ export async function uploadTransactionsCsv(
   const result = await fetchReviewDataByHash(uploadPayload.file_hash, useModel)
 
   return {
+    allItems: result.allItems,
     fileHash: uploadPayload.file_hash,
     items: result.items,
     source: 'upload',
@@ -153,10 +155,16 @@ export async function fetchReviewDataByHash(
   }
 
   const csv = await exportResponse.text()
+  const analyzedTransactions = parseAnalyzedTransactionsCsv(csv)
 
   return {
+    allItems: mapAnalyzedTransactions(analyzedTransactions, {
+      suspiciousOnly: false,
+    }),
     fileHash,
-    items: mapAnalyzedTransactions(parseAnalyzedTransactionsCsv(csv)),
+    items: mapAnalyzedTransactions(analyzedTransactions, {
+      suspiciousOnly: true,
+    }),
     source: 'cache',
     useModel,
   }
@@ -368,10 +376,11 @@ function parseCsvRows(csv: string): string[][] {
 
 function mapAnalyzedTransactions(
   transactions: AnalyzedCsvTransaction[],
+  { suspiciousOnly }: { suspiciousOnly: boolean },
 ): TransactionFlag[] {
   const contextByCard = buildCardContext(transactions)
 
-  return transactions
+  const mappedTransactions = transactions
     .map((transaction) =>
       toTransactionFlag(
         transaction,
@@ -388,10 +397,14 @@ function mapAnalyzedTransactions(
         transaction.reviewer_notes,
       ),
     )
-    .filter(
-      (transaction) => transaction.isFraudCandidate || transaction.score > 0,
-    )
     .map(stripFraudCandidateMarker)
+
+  return (suspiciousOnly
+    ? mappedTransactions.filter(
+        (transaction) => transaction.isFraud || transaction.score > 0,
+      )
+    : mappedTransactions
+  )
     .sort((first, second) => second.score - first.score)
 }
 
