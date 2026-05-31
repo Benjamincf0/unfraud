@@ -123,8 +123,18 @@ def simple_fraud_detection(
         (working["amount"] - working["card_mean_before"])
         / working["card_std_before"].replace(0, pd.NA)
     ).fillna(0.0)
+    zero_std_card = (
+        (working["card_tx_index"] >= 1)
+        & (working["card_std_before"] == 0)
+        & ((working["amount"] - working["card_mean_before"]).abs() > 0)
+    )
+    working.loc[zero_std_card, "amount_zscore"] = (
+        (working.loc[zero_std_card, "amount"] - working.loc[zero_std_card, "card_mean_before"])
+        .apply(lambda value: 6.0 if value > 0 else -6.0)
+    )
 
     card_cat_group = working.groupby(["card_id", "merchant_category"], sort=False)
+    category_seen_before = working.groupby(["card_id", "merchant_category"], sort=False).cumcount()
     working["card_cat_median_before"] = card_cat_group["amount"].transform(
         lambda s: s.shift().expanding().median()
     )
@@ -149,8 +159,18 @@ def simple_fraud_detection(
         (working["amount"] - working["card_cat_mean_before"])
         / working["card_cat_std_before"].replace(0, pd.NA)
     ).fillna(0.0)
+    zero_std_category = (
+        (category_seen_before >= 1)
+        & (working["card_cat_std_before"] == 0)
+        & ((working["amount"] - working["card_cat_mean_before"]).abs() > 0)
+    )
+    working.loc[zero_std_category, "amount_zscore_category"] = (
+        (
+            working.loc[zero_std_category, "amount"]
+            - working.loc[zero_std_category, "card_cat_mean_before"]
+        ).apply(lambda value: 6.0 if value > 0 else -6.0)
+    )
 
-    category_seen_before = working.groupby(["card_id", "merchant_category"], sort=False).cumcount()
     device_seen_before = working.groupby(["card_id", "device_id"], sort=False).cumcount()
     ip_seen_before = working.groupby(["card_id", "ip_address"], sort=False).cumcount()
 
@@ -209,21 +229,15 @@ def simple_fraud_detection(
     working["merchant_tx_30m"] = merchant_tx_30m
     working["merchant_unique_cards_2h"] = merchant_unique_cards_2h
 
-    amount_risk = ((working["amount_ratio"] - 1.6) / 5.0).clip(lower=0, upper=1)
     amount_z_risk = ((working["amount_zscore"].abs() - 2.2) / 3.0).clip(lower=0, upper=1)
     cat_z_capped = working["amount_zscore_category"].abs().clip(upper=8.0)
     category_amount_z_risk = ((cat_z_capped - 2.5) / 3.5).clip(lower=0, upper=1)
-    category_amount_ratio_risk = (
-        (working["amount_ratio_category"] - 3.0) / 5.0
-    ).clip(lower=0, upper=1)
     category_risk = (1 - working["category_seen_rate"]).clip(lower=0, upper=1) * working["novel_category"]
     device_novelty_risk = working["novel_device"] * 1.0
     ip_novelty_risk = working["novel_ip"] * 1.0
     corroborated = (
         (working["amount_zscore"].abs() >= 2.0)
         | (working["amount_zscore_category"].abs() >= 2.5)
-        | (working["amount_ratio"] >= 2.5)
-        | (working["amount_ratio_category"] >= 3.0)
         | (working["novel_device"] == 1)
         | (working["novel_ip"] == 1)
         | (working["novel_category"] == 1)
@@ -240,8 +254,8 @@ def simple_fraud_detection(
     ).clip(lower=0, upper=1)
 
     components = {
-        "amount_outlier": 0.18 * amount_risk + 0.08 * amount_z_risk,
-        "category_amount": 0.14 * category_amount_z_risk + 0.12 * category_amount_ratio_risk,
+        "amount_outlier": 0.26 * amount_z_risk,
+        "category_amount": 0.26 * category_amount_z_risk,
         "category_shift": 0.07 * category_risk,
         "device_shift": 0.10 * device_novelty_risk,
         "ip_shift": 0.09 * ip_novelty_risk,
@@ -258,11 +272,10 @@ def simple_fraud_detection(
     score = sum(components.values()).clip(lower=0, upper=1)
     has_category_history = category_seen_before >= 1
     high_confidence_rule = (
-        ((working["amount_ratio"] >= 7.0) & (multipliers.get("amount_outlier", 1.0) >= 0.5))
+        ((working["amount_zscore"].abs() >= 4.5) & (multipliers.get("amount_outlier", 1.0) >= 0.5))
         | (
             has_category_history
-            & (working["amount_ratio_category"] >= 6.0)
-            & (cat_z_capped >= 3.5)
+            & (cat_z_capped >= 4.0)
             & (multipliers.get("category_amount", 1.0) >= 0.5)
         )
         | (
@@ -330,13 +343,13 @@ def simple_fraud_detection(
             "amount_outlier",
             "Amount anomaly",
             (
-                f"Amount is {row['amount_ratio']:.2f}× this card's historical median "
-                f"({row['card_median_before']:.2f})."
+                f"Amount is {row['amount_zscore']:.2f} std dev from this card's historical mean "
+                f"({row['card_mean_before']:.2f}, std {row['card_std_before']:.2f})."
             ),
             components["amount_outlier"].loc[row.name],
             "per_card",
             row["amount"],
-            row["card_median_before"],
+            row["card_mean_before"],
         )
 
         add_reason(
@@ -356,14 +369,14 @@ def simple_fraud_detection(
             "category_amount",
             "Category amount anomaly",
             (
-                f"Amount is {row['amount_ratio_category']:.2f}× this card's median at "
-                f"'{row['merchant_category']}' ({row['card_cat_median_before']:.2f}), "
-                f"z={row['amount_zscore_category']:.2f} within category."
+                f"Within '{row['merchant_category']}', amount is "
+                f"{row['amount_zscore_category']:.2f} std dev from this card's category mean "
+                f"({row['card_cat_mean_before']:.2f}, std {row['card_cat_std_before']:.2f})."
             ),
             components["category_amount"].loc[row.name],
             "per_card",
             row["amount"],
-            row["card_cat_median_before"],
+            row["card_cat_mean_before"],
         )
 
         if row["novel_device"] == 1:
