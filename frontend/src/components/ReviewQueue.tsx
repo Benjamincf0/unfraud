@@ -425,6 +425,21 @@ export function ReviewQueue({
       >,
     );
   }, [transactions]);
+
+  const queueFilterOptions = useMemo(
+    () =>
+      filterOptions.map((option) => {
+        const count =
+          option.value === "all" ? transactions.length : queueStats[option.value];
+
+        return {
+          ...option,
+          label: `${option.label} (${count})`,
+        };
+      }),
+    [queueStats, transactions.length],
+  );
+
   const tunedQueueCount = useMemo(
     () =>
       transactions.filter(
@@ -794,7 +809,7 @@ export function ReviewQueue({
           <Tabs
             className="queue-tabs"
             onValueChange={setFilter}
-            options={filterOptions}
+            options={queueFilterOptions}
             value={filter}
           />
 
