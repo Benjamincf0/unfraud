@@ -177,7 +177,9 @@ export function TransactionDetail({
                   </strong>
                   <p>{reason.detail}</p>
                 </div>
-                <span>{reason.weight}</span>
+                <span title="Share of what drove the model score for this alert">
+                  {reason.weight}%
+                </span>
               </div>
             ))}
           </div>

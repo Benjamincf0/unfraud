@@ -1,4 +1,4 @@
-"""ML fraud scorer for production CSVs — loads a trained ``FraudDetectionPipeline`` artifact."""
+"""ML fraud scorer: model decides flags/scores, SHAP explains them in reviewer language."""
 
 from __future__ import annotations
 
@@ -14,17 +14,35 @@ from algo.algo import (
     FraudDetectionPipeline,
     apply_rule_guardrails,
     build_features,
-    build_shap_explainer,
     ensure_inference_columns,
     prepare_features,
+    shap_score_breakdown_for_rows,
     shrink,
 )
+from fraud_scorer import simple_fraud_detection
 
 class ModelNotAvailableError(RuntimeError):
     """Raised when ``use_model=True`` but no trained artifact exists."""
 
 
 _pipeline: Optional[FraudDetectionPipeline] = None
+
+ML_DECISION_COLUMNS = (
+    "is_fraud",
+    "fraud_score",
+    "model_score",
+    "flagged_by_model",
+    "flagged_by_rules",
+)
+
+EXPLAIN_COLUMNS = (
+    "fraud_reasons",
+    "score_breakdown",
+    "card_baseline_json",
+    "cross_card_signals_json",
+    "graph_features_json",
+    "card_amount_series_json",
+)
 
 
 def is_model_available(path: Path | str = DEFAULT_MODEL_PATH) -> bool:
@@ -42,7 +60,24 @@ def get_pipeline(path: Path | str = DEFAULT_MODEL_PATH) -> FraudDetectionPipelin
             )
         _pipeline = FraudDetectionPipeline.load(target)
         _pipeline._artifact_path = str(target.resolve())
+        _pipeline.ensure_explainer()
     return _pipeline
+
+
+def _empty_result(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    for column, default_value in [
+        ("is_fraud", False),
+        ("fraud_score", 0.0),
+        ("fraud_reasons", ""),
+        ("score_breakdown", "[]"),
+        ("card_baseline_json", "{}"),
+        ("cross_card_signals_json", "{}"),
+        ("graph_features_json", "{}"),
+        ("card_amount_series_json", "[]"),
+    ]:
+        working[column] = default_value
+    return working
 
 
 def _prepare_upload_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -64,203 +99,165 @@ def _prepare_upload_frame(df: pd.DataFrame) -> pd.DataFrame:
     return working.sort_values(["timestamp", "transaction_id"]).reset_index(drop=True)
 
 
-def _empty_result(df: pd.DataFrame) -> pd.DataFrame:
-    working = df.copy()
-    for column, default_value in [
-        ("is_fraud", False),
-        ("fraud_score", 0.0),
-        ("fraud_reasons", ""),
-        ("score_breakdown", "[]"),
-        ("card_baseline_json", "{}"),
-        ("cross_card_signals_json", "{}"),
-        ("graph_features_json", "{}"),
-        ("card_amount_series_json", "[]"),
-    ]:
-        working[column] = default_value
-    return working
+def _model_decisions(
+    pipeline: FraudDetectionPipeline,
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    working = _prepare_upload_frame(df)
+    featured = apply_rule_guardrails(build_features(shrink(working.copy())))
+    model_prob, combined = pipeline.hybrid_scores(featured, prepare_features(featured))
+    threshold = pipeline.threshold
+    flagged = (model_prob >= threshold) | featured["rule_guardrail"].values
+
+    decisions = pd.DataFrame(
+        {
+            "transaction_id": featured["transaction_id"].astype(str).values,
+            "model_score": np.round(model_prob, 4),
+            "fraud_score": np.round(combined, 4),
+            "is_fraud": flagged,
+            "flagged_by_model": (model_prob >= threshold),
+            "flagged_by_rules": featured["rule_guardrail"].values,
+        }
+    )
+    return decisions, featured
 
 
-def _parse_rule_codes(raw: Any) -> List[str]:
-    if raw is None or (isinstance(raw, float) and np.isnan(raw)):
-        return []
-    if isinstance(raw, list):
-        return [str(item) for item in raw]
-    if isinstance(raw, str):
-        if raw.startswith("["):
-            return json.loads(raw)
-        return [raw] if raw else []
-    return [str(raw)]
+def _apply_shap_explanations(
+    result: pd.DataFrame,
+    pipeline: FraudDetectionPipeline,
+    featured: pd.DataFrame,
+    heuristic: pd.DataFrame,
+) -> pd.DataFrame:
+    """Replace explanations on flagged rows with SHAP; heuristic fallback if SHAP empty."""
+    out = result.copy()
+    pipeline.ensure_explainer()
+    if pipeline.explainer is None:
+        return out
 
+    heuristic_by_tx = heuristic.set_index(heuristic["transaction_id"].astype(str))
+    featured = featured.copy()
+    featured["transaction_id"] = featured["transaction_id"].astype(str)
 
-def _build_score_breakdown(row: pd.Series) -> List[Dict[str, Any]]:
-    breakdown: List[Dict[str, Any]] = []
-    model_score = float(row.get("model_score", row.get("fraud_score", 0.0)))
-    combined_score = float(row.get("fraud_score", model_score))
+    flagged_tx = out.loc[out["is_fraud"], "transaction_id"].astype(str)
+    if flagged_tx.empty:
+        out["score_breakdown"] = "[]"
+        out["fraud_reasons"] = ""
+        return out
 
-    if bool(row.get("flagged_by_model")):
-        breakdown.append(
-            {
-                "code": "model_score",
-                "label": "Model score",
-                "detail": f"LightGBM fraud probability {model_score:.2f}.",
-                "weight": round(model_score, 4),
-                "signal_type": "model",
-                "value": round(model_score, 4),
-                "baseline": round(float(row.get("threshold", 0.5)), 4),
-            }
+    flagged_order = pd.DataFrame(
+        {"transaction_id": flagged_tx.tolist(), "_ord": range(len(flagged_tx))}
+    )
+    flagged_featured = (
+        featured.merge(flagged_order, on="transaction_id", how="inner")
+        .sort_values("_ord")
+        .drop(columns="_ord")
+    )
+
+    breakdowns = shap_score_breakdown_for_rows(pipeline.explainer, flagged_featured)
+    breakdown_by_tx = {
+        str(tx_id): breakdown
+        for tx_id, breakdown in zip(flagged_featured["transaction_id"], breakdowns)
+    }
+
+    score_breakdown_col: List[str] = []
+    fraud_reasons_col: List[str] = []
+
+    for _, row in out.iterrows():
+        tx_id = str(row["transaction_id"])
+        if not bool(row["is_fraud"]):
+            score_breakdown_col.append("[]")
+            fraud_reasons_col.append("")
+            continue
+
+        breakdown = breakdown_by_tx.get(tx_id, [])
+        if not breakdown and tx_id in heuristic_by_tx.index:
+            breakdown = json.loads(
+                heuristic_by_tx.loc[tx_id].get("score_breakdown") or "[]"
+            )
+
+        score_breakdown_col.append(json.dumps(breakdown))
+        fraud_reasons_col.append(
+            "; ".join(item["label"] for item in breakdown if item.get("label"))
         )
 
-    rule_weight = max(0.0, combined_score - model_score)
-    for index, rule in enumerate(_parse_rule_codes(row.get("rule_reason_codes"))):
-        contribution = rule_weight / max(len(_parse_rule_codes(row.get("rule_reason_codes"))), 1)
-        breakdown.append(
-            {
-                "code": f"rule_{index}",
-                "label": "Rule guardrail",
-                "detail": rule,
-                "weight": round(contribution, 4),
-                "signal_type": "rule",
-            }
-        )
-
-    for index, shap_reason in enumerate(row.get("shap_reason_codes") or []):
-        breakdown.append(
-            {
-                "code": f"shap_{index}",
-                "label": "Model feature",
-                "detail": str(shap_reason),
-                "weight": round(max(0.03, model_score / 4), 4),
-                "signal_type": "model",
-            }
-        )
-
-    if not breakdown and combined_score > 0:
-        breakdown.append(
-            {
-                "code": "composite",
-                "label": "Composite anomaly score",
-                "detail": str(row.get("alert_reason") or "Elevated hybrid fraud score."),
-                "weight": round(combined_score, 4),
-                "signal_type": "composite",
-                "value": round(combined_score, 4),
-                "baseline": 0.0,
-            }
-        )
-
-    return sorted(breakdown, key=lambda item: item.get("weight", 0), reverse=True)
+    out["score_breakdown"] = score_breakdown_col
+    out["fraud_reasons"] = fraud_reasons_col
+    return out
 
 
-def _build_card_amount_series(scored: pd.DataFrame, points: int = 12) -> List[str]:
-    series_column: List[str] = []
-    card_counters: Dict[str, int] = {}
-    card_series_map: Dict[str, List[List[Dict[str, Any]]]] = {}
+def _rebuild_card_amount_series(df: pd.DataFrame, points: int = 12) -> pd.DataFrame:
+    """Rebuild amount history charts using the active fraud_score column."""
+    out = df.copy()
+    if out.empty:
+        return out
 
-    for card_id, card_df in scored.groupby("card_id", sort=False):
-        card_df = card_df.sort_values("timestamp")
+    working = out.copy()
+    working["timestamp_dt"] = pd.to_datetime(working["timestamp"], errors="coerce")
+    series_map: Dict[str, List[List[Dict[str, Any]]]] = {}
+
+    for card_id, card_df in working.groupby("card_id", sort=False):
+        card_df = card_df.sort_values("timestamp_dt")
         running: List[Dict[str, Any]] = []
         snapshots: List[List[Dict[str, Any]]] = []
         for _, row in card_df.iterrows():
-            ts = row["timestamp"]
-            timestamp = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             running.append(
                 {
-                    "timestamp": timestamp,
+                    "timestamp": row["timestamp_dt"].isoformat(),
                     "amount": float(row["amount"]),
                     "risk_score": round(float(row["fraud_score"]), 4),
                 }
             )
             snapshots.append(running[-points:].copy())
-        card_series_map[str(card_id)] = snapshots
+        series_map[str(card_id)] = snapshots
 
-    for _, row in scored.iterrows():
+    card_counters: Dict[str, int] = {}
+    series_column: List[str] = []
+    for _, row in working.iterrows():
         card_id = str(row["card_id"])
         position = card_counters.get(card_id, 0)
-        series_column.append(json.dumps(card_series_map[card_id][position]))
+        series_column.append(json.dumps(series_map[card_id][position]))
         card_counters[card_id] = position + 1
-    return series_column
+
+    out["card_amount_series_json"] = series_column
+    return out
 
 
-def _adapt_scored_frame(scored: pd.DataFrame, threshold: float) -> pd.DataFrame:
-    out = scored.copy()
-    out["threshold"] = threshold
+def _apply_model_fallback_reasons(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    """When the model flags a row with no breakdown, add plain language."""
+    out = df.copy()
     breakdowns: List[str] = []
-    baselines: List[str] = []
-    cross_card: List[str] = []
-    graph_features: List[str] = []
     reason_labels: List[str] = []
 
     for _, row in out.iterrows():
-        breakdown = _build_score_breakdown(row)
-        breakdowns.append(json.dumps(breakdown))
-        reason_labels.append(
-            "; ".join(item["label"] for item in breakdown if item.get("label"))
-            or str(row.get("alert_reason") or "")
-        )
-        baselines.append(
-            json.dumps(
+        breakdown = json.loads(row.get("score_breakdown") or "[]")
+        if bool(row["is_fraud"]) and not breakdown:
+            score = float(row["fraud_score"])
+            breakdown = [
                 {
-                    "history_count": int(row.get("tx_of_day", 0) or 0),
-                    "typical_amount": round(float(row.get("card_amt_mean_so_far", row["amount"])), 2),
-                    "amount_ratio": round(
-                        float(row.get("amount", 0))
-                        / max(float(row.get("card_amt_mean_so_far", row["amount"]) or 0), 1e-9),
-                        4,
+                    "code": "model_risk",
+                    "label": "Elevated model risk",
+                    "detail": (
+                        f"The fraud model scored this transaction {score:.0%}, "
+                        f"above the review threshold ({threshold:.0%})."
                     ),
-                    "amount_zscore": round(float(row.get("amt_z_vs_card", 0.0)), 4),
-                    "category_typical_amount": round(float(row.get("card_amt_mean_so_far", row["amount"])), 2),
-                    "amount_ratio_category": round(
-                        float(row.get("amount", 0))
-                        / max(float(row.get("card_amt_mean_so_far", row["amount"]) or 0), 1e-9),
-                        4,
-                    ),
-                    "amount_zscore_category": round(float(row.get("amt_z_vs_category", 0.0)), 4),
-                    "usual_categories": [],
-                    "usual_countries": [],
-                    "usual_devices": [],
-                    "usual_ips": [],
+                    "weight": round(score, 4),
+                    "signal_type": "model",
+                    "value": round(score, 4),
+                    "baseline": round(threshold, 4),
                 }
-            )
-        )
-        cross_card.append(
-            json.dumps(
-                {
-                    "device_card_fanout": int(row.get("device_card_fanout_24h", 1) or 1),
-                    "ip_card_fanout": int(row.get("ip_card_fanout_24h", 1) or 1),
-                    "merchant_tx_30m": int(row.get("tx_5min", 0) or 0),
-                    "merchant_unique_cards_2h": int(row.get("distinct_categories_24h", 0) or 0),
-                }
-            )
-        )
-        graph_features.append(
-            json.dumps(
-                {
-                    "amount_ratio": round(
-                        float(row.get("amount", 0))
-                        / max(float(row.get("card_amt_mean_so_far", row["amount"]) or 0), 1e-9),
-                        4,
-                    ),
-                    "amount_zscore": round(float(row.get("amt_z_vs_card", 0.0)), 4),
-                    "amount_ratio_category": round(
-                        float(row.get("amount", 0))
-                        / max(float(row.get("card_amt_mean_so_far", row["amount"]) or 0), 1e-9),
-                        4,
-                    ),
-                    "amount_zscore_category": round(float(row.get("amt_z_vs_category", 0.0)), 4),
-                    "card_tx_index": float(row.get("tx_of_day", 0) or 0),
-                    "device_card_fanout": float(row.get("device_card_fanout_24h", 1) or 1),
-                    "ip_card_fanout": float(row.get("ip_card_fanout_24h", 1) or 1),
-                    "merchant_tx_30m": float(row.get("tx_5min", 0) or 0),
-                    "merchant_unique_cards_2h": float(row.get("distinct_categories_24h", 0) or 0),
-                }
-            )
-        )
+            ]
 
-    out["fraud_reasons"] = reason_labels
+        breakdowns.append(json.dumps(breakdown))
+        existing = str(row.get("fraud_reasons") or "").strip()
+        if existing:
+            reason_labels.append(existing)
+        else:
+            reason_labels.append(
+                "; ".join(item["label"] for item in breakdown if item.get("label"))
+            )
+
     out["score_breakdown"] = breakdowns
-    out["card_baseline_json"] = baselines
-    out["cross_card_signals_json"] = cross_card
-    out["graph_features_json"] = graph_features
-    out["card_amount_series_json"] = _build_card_amount_series(out)
+    out["fraud_reasons"] = reason_labels
     return out
 
 
@@ -269,37 +266,19 @@ def ml_fraud_detection(
     *,
     model_path: Path | str | None = None,
 ) -> pd.DataFrame:
-    """Score unlabeled transactions with the trained hybrid ML pipeline."""
-    working = _prepare_upload_frame(df)
-    if working.empty:
+    """Flag with the trained model; explain flagged rows with readable SHAP breakdowns."""
+    if df.empty:
         return _empty_result(df)
 
     pipeline = get_pipeline(model_path or DEFAULT_MODEL_PATH)
-    if pipeline.explainer is None and pipeline.model is not None:
-        sample = working.head(min(len(working), 200))
-        g_sample = apply_rule_guardrails(build_features(shrink(sample.copy())))
-        pipeline.explainer = build_shap_explainer(pipeline.model, prepare_features(g_sample))
+    decisions, featured = _model_decisions(pipeline, df)
+    heuristic = simple_fraud_detection(df)
 
-    featured = apply_rule_guardrails(build_features(shrink(working.copy())))
-    scored = pipeline.predict(featured, prepare_features(featured))
-    adapted = _adapt_scored_frame(scored, pipeline.threshold)
-    score_columns = [
-        "is_fraud",
-        "fraud_score",
-        "fraud_reasons",
-        "score_breakdown",
-        "card_baseline_json",
-        "cross_card_signals_json",
-        "graph_features_json",
-        "card_amount_series_json",
-        "model_score",
-        "flagged_by_model",
-        "flagged_by_rules",
-        "alert_reason",
-    ]
-    keyed = adapted.set_index("transaction_id")
-    result = df.copy()
-    for column in score_columns:
-        if column in keyed.columns:
-            result[column] = result["transaction_id"].map(keyed[column])
-    return result
+    result = heuristic.copy()
+    keyed = decisions.set_index("transaction_id")
+    for column in ML_DECISION_COLUMNS:
+        result[column] = result["transaction_id"].astype(str).map(keyed[column])
+
+    result = _apply_shap_explanations(result, pipeline, featured, heuristic)
+    result = _rebuild_card_amount_series(result)
+    return _apply_model_fallback_reasons(result, pipeline.threshold)
