@@ -1,6 +1,7 @@
 /tests/__pycache__
 
 *.csv
+!compromised_ip_history.csv
 
 .DS_Store
 
