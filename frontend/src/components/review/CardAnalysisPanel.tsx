@@ -6,6 +6,7 @@ type CardAnalysisPanelProps = {
   analysis: CardAnalysis | null
   error: string | null
   isLoading: boolean
+  onFilterCardCountry: (payload: { cardId: string; country: string }) => void
   onSelectTransaction: (transactionId: string) => void
   reviewableTransactionIds: Set<string>
   transactionId: string
@@ -94,6 +95,7 @@ export function CardAnalysisPanel({
   analysis,
   error,
   isLoading,
+  onFilterCardCountry,
   onSelectTransaction,
   reviewableTransactionIds,
   transactionId,
@@ -146,7 +148,11 @@ export function CardAnalysisPanel({
         </div>
       </dl>
 
-      <CardGeoMap transactions={analysis.transactions} />
+      <CardGeoMap
+        cardId={analysis.cardId}
+        onFilterCardCountry={onFilterCardCountry}
+        transactions={analysis.transactions}
+      />
 
       <CardHistoryChart
         currentTransactionId={transactionId}
@@ -158,7 +164,15 @@ export function CardAnalysisPanel({
   )
 }
 
-function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
+function CardGeoMap({
+  cardId,
+  onFilterCardCountry,
+  transactions,
+}: {
+  cardId: string
+  onFilterCardCountry: (payload: { cardId: string; country: string }) => void
+  transactions: CardTransaction[]
+}) {
   const points = useMemo(() => {
     const counts = getCountryCounts(transactions)
 
@@ -306,7 +320,13 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
               )
 
               return (
-                <div className="geo-country-row" key={country}>
+                <button
+                  className="geo-country-row"
+                  key={country}
+                  onClick={() => onFilterCardCountry({ cardId, country })}
+                  title={`Filter ${cardId} transactions in ${country}`}
+                  type="button"
+                >
                   <div className="geo-country-labels">
                     <span>{country}</span>
                     <strong>{count}</strong>
@@ -314,7 +334,7 @@ function CardGeoMap({ transactions }: { transactions: CardTransaction[] }) {
                   <div className="geo-country-track" aria-hidden="true">
                     <span style={{ width: `${width}%` }} />
                   </div>
-                </div>
+                </button>
               )
             })
           )}
