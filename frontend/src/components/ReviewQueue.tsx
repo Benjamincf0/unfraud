@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   EmptyTransactionDetail,
@@ -10,21 +17,26 @@ import { Input } from "./ui/input";
 import { Slider } from "./ui/slider";
 import { Tabs } from "./ui/tabs";
 import {
+  applyScorerDetailToTransaction,
   fetchCardAnalysis,
+  fetchFullReviewQueue,
+  fetchRelatedTransactions,
   fetchReviewLog,
+  fetchReviewQueuePage,
+  fetchReviewSummary,
+  fetchTransactionDetail,
   submitReviewDecision,
+  type ReviewQueueLoadProgress,
 } from "../api/review";
 import type { ReviewSession } from "../lib/reviewSessions";
+import { mergeTransactionMaps } from "../lib/reviewMemory";
 import {
   buildTransactionIndex,
-  collectDecisions,
   defaultRiskTuning,
   getEffectiveRiskThreshold,
-  getScoreSource,
-  mergeScoringWithDecisions,
   resolveRiskSortMode,
   sortTransactionsByScore,
-  type DualReviewDataResult,
+  type ReviewSessionData,
   type RiskSortMode,
   type RiskTuningByMode,
 } from "../lib/scoringViews";
@@ -38,13 +50,36 @@ import type {
 
 type QueueFilter = "pending" | "all" | "approved" | "dismissed" | "escalated";
 
+function isFlaggedTransaction(transaction: TransactionFlag) {
+  return transaction.isFraud || transaction.score > 0;
+}
+
+function flaggedTransactionsFrom(
+  byId: Map<string, TransactionFlag>,
+): TransactionFlag[] {
+  return Array.from(byId.values()).filter(isFlaggedTransaction);
+}
+
+type QueueLoadState = {
+  error: string | null;
+  progress: ReviewQueueLoadProgress;
+  status: "idle" | "loading" | "ready" | "error";
+};
+
+const emptyQueueLoadProgress: ReviewQueueLoadProgress = {
+  heuristicLoaded: 0,
+  heuristicTotal: 0,
+  modelLoaded: 0,
+  modelTotal: 0,
+};
+
 type SearchMode = "all" | "single" | "custom";
 
 type ReviewQueueProps = {
   activeFileHash: string;
   onReset: () => void;
   onSelectSession: (fileHash: string) => void;
-  reviewData: DualReviewDataResult;
+  session: ReviewSessionData;
   sessions: ReviewSession[];
 };
 
@@ -247,21 +282,36 @@ export function ReviewQueue({
   activeFileHash,
   onReset,
   onSelectSession,
-  reviewData,
+  session,
   sessions,
 }: ReviewQueueProps) {
-  const fileHash = reviewData.fileHash;
+  const fileHash = session.fileHash;
   const queryClient = useQueryClient();
+  const summaryQuery = useQuery({
+    queryFn: () => fetchReviewSummary(fileHash),
+    queryKey: ["review-summary", fileHash],
+    initialData: session.summary,
+  });
+  const summary = summaryQuery.data ?? session.summary;
   const [useModel, setUseModel] = useState(false);
   const [sortMode, setSortMode] = useState<RiskSortMode>("active");
   const [riskTuningByMode, setRiskTuningByMode] =
     useState<RiskTuningByMode>(defaultRiskTuning);
-  const [transactions, setTransactions] = useState(
-    reviewData.heuristic.items,
+  const [heuristicById, setHeuristicById] = useState(
+    () => new Map<string, TransactionFlag>(),
   );
-  const [activeId, setActiveId] = useState(
-    reviewData.heuristic.items[0]?.transactionId ?? "",
+  const [modelById, setModelById] = useState(
+    () => new Map<string, TransactionFlag>(),
   );
+  const [relatedById, setRelatedById] = useState(
+    () => new Map<string, TransactionFlag[]>(),
+  );
+  const [queueLoad, setQueueLoad] = useState<QueueLoadState>({
+    error: null,
+    progress: emptyQueueLoadProgress,
+    status: "idle",
+  });
+  const [activeId, setActiveId] = useState("");
   const [filter, setFilter] = useState<QueueFilter>("pending");
   const [query, setQuery] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("all");
@@ -279,6 +329,24 @@ export function ReviewQueue({
     label: string;
     transactionIds: Set<string>;
   } | null>(null);
+  const [enrichedTransactionIds, setEnrichedTransactionIds] = useState(
+    () => new Set<string>(),
+  );
+  const [enrichmentFailedIds, setEnrichmentFailedIds] = useState(
+    () => new Set<string>(),
+  );
+  const [enrichingTransactionId, setEnrichingTransactionId] = useState<
+    string | null
+  >(null);
+  const heuristicByIdRef = useRef(heuristicById);
+  const modelByIdRef = useRef(modelById);
+  const relatedByIdRef = useRef(relatedById);
+  const enrichedTransactionIdsRef = useRef(enrichedTransactionIds);
+  const detailInFlightRef = useRef(new Map<string, Promise<boolean>>());
+  heuristicByIdRef.current = heuristicById;
+  modelByIdRef.current = modelById;
+  relatedByIdRef.current = relatedById;
+  enrichedTransactionIdsRef.current = enrichedTransactionIds;
   const {
     error: reviewSyncError,
     isError: reviewSyncFailed,
@@ -290,18 +358,13 @@ export function ReviewQueue({
       ...variables
     }) => submitReviewDecision(variables),
     onError: (_error, variables) => {
-      setTransactions((current) =>
-        current.map((transaction) =>
-          transaction.transactionId === variables.transactionId
-            ? { ...transaction, decision: variables.previousDecision }
-            : transaction,
-        ),
-      );
+      updateDecision(variables.transactionId, variables.previousDecision);
       setHistory(variables.rollbackHistory);
       setActiveId(variables.transactionId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["review-log", fileHash] });
+      queryClient.invalidateQueries({ queryKey: ["review-summary", fileHash] });
     },
   });
   const reviewLogQuery = useQuery({
@@ -309,16 +372,325 @@ export function ReviewQueue({
     queryFn: () => fetchReviewLog(fileHash),
     queryKey: ["review-log", fileHash],
   });
+
+  const updateDecision = useCallback(
+    (transactionId: string, decision: ReviewDecision) => {
+      const applyDecision = (current: Map<string, TransactionFlag>) => {
+        const transaction = current.get(transactionId);
+        if (!transaction) {
+          return current;
+        }
+
+        const next = new Map(current);
+        next.set(transactionId, { ...transaction, decision });
+        return next;
+      };
+
+      setHeuristicById(applyDecision);
+      setModelById(applyDecision);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setHeuristicById(new Map());
+    setModelById(new Map());
+    setRelatedById(new Map());
+    setEnrichedTransactionIds(new Set());
+    setEnrichmentFailedIds(new Set());
+    setEnrichingTransactionId(null);
+    detailInFlightRef.current = new Map();
+    setUseModel(false);
+    setSortMode("active");
+    setRiskTuningByMode(defaultRiskTuning);
+    setActiveId("");
+    setFilter("pending");
+    setSearchMode("all");
+    setSingleField("transaction_id");
+    setCustomFields(["transaction_id", "card_id", "merchant_name"]);
+    setNetworkFocus(null);
+    setHistory([]);
+
+    let cancelled = false;
+
+    async function loadQueue() {
+      setQueueLoad({
+        error: null,
+        progress: {
+          heuristicLoaded: 0,
+          heuristicTotal: summary.flaggedCount,
+          modelLoaded: 0,
+          modelTotal: summary.modelFlaggedCount,
+        },
+        status: "loading",
+      });
+
+      try {
+        await fetchFullReviewQueue(fileHash, summary, {
+          onHeuristicChunk: (items) => {
+            if (cancelled || items.length === 0) {
+              return;
+            }
+
+            setHeuristicById((current) =>
+              mergeTransactionMaps(current, items),
+            );
+            setActiveId((current) => current || items[0]?.transactionId || "");
+          },
+          onModelChunk: (items) => {
+            if (cancelled || items.length === 0) {
+              return;
+            }
+
+            setModelById((current) => mergeTransactionMaps(current, items));
+          },
+          onProgress: (progress) => {
+            if (cancelled) {
+              return;
+            }
+
+            setQueueLoad((current) => ({
+              ...current,
+              progress,
+            }));
+          },
+        });
+
+        if (!cancelled) {
+          setQueueLoad((current) => ({
+            ...current,
+            status: "ready",
+          }));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setQueueLoad({
+            error:
+              error instanceof Error
+                ? error.message
+                : "Could not load review queue.",
+            progress: emptyQueueLoadProgress,
+            status: "error",
+          });
+        }
+      }
+    }
+
+    void loadQueue();
+
+    return () => {
+      cancelled = true;
+    };
+    // Summary counts are stable for a file hash; avoid reloading on object identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fileHash,
+    summary.flaggedCount,
+    summary.mlModelAvailable,
+    summary.modelFlaggedCount,
+  ]);
+
+  const enrichTransactionDetail = useCallback(
+    async (transactionId: string) => {
+      if (enrichedTransactionIdsRef.current.has(transactionId)) {
+        return true;
+      }
+
+      const inFlight = detailInFlightRef.current.get(transactionId);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      const enrichment = (async () => {
+        let heuristicItem = heuristicByIdRef.current.get(transactionId);
+        if (!heuristicItem) {
+          const heuristicPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId,
+            useModel: false,
+          });
+          heuristicItem = heuristicPage.items[0];
+          if (heuristicItem) {
+            setHeuristicById((current) =>
+              mergeTransactionMaps(current, [heuristicItem!]),
+            );
+          }
+        }
+
+        let modelItem = modelByIdRef.current.get(transactionId);
+        if (summary.mlModelAvailable && !modelItem) {
+          const modelPage = await fetchReviewQueuePage(fileHash, {
+            flaggedOnly: false,
+            transactionId,
+            useModel: true,
+          });
+          modelItem = modelPage.items[0];
+          if (modelItem) {
+            setModelById((current) =>
+              mergeTransactionMaps(current, [modelItem!]),
+            );
+          }
+        }
+
+        const detail = await fetchTransactionDetail(fileHash, transactionId);
+
+        setHeuristicById((current) => {
+          const existing = current.get(transactionId) ?? heuristicItem;
+          if (!existing) {
+            return current;
+          }
+
+          const next = new Map(current);
+          next.set(
+            transactionId,
+            applyScorerDetailToTransaction(
+              existing,
+              detail.heuristic,
+              transactionId,
+            ),
+          );
+          return next;
+        });
+
+        if (detail.model) {
+          setModelById((current) => {
+            const existing =
+              current.get(transactionId) ?? modelItem ?? heuristicItem;
+            if (!existing) {
+              return current;
+            }
+
+            const next = new Map(current);
+            next.set(
+              transactionId,
+              applyScorerDetailToTransaction(
+                existing,
+                detail.model!,
+                transactionId,
+              ),
+            );
+            return next;
+          });
+        }
+
+        enrichedTransactionIdsRef.current.add(transactionId);
+        setEnrichedTransactionIds(
+          new Set(enrichedTransactionIdsRef.current),
+        );
+        setEnrichmentFailedIds((current) => {
+          if (!current.has(transactionId)) {
+            return current;
+          }
+
+          const next = new Set(current);
+          next.delete(transactionId);
+          return next;
+        });
+        return true;
+      })();
+
+      detailInFlightRef.current.set(transactionId, enrichment);
+
+      try {
+        return await enrichment;
+      } catch {
+        setEnrichmentFailedIds((current) => {
+          const next = new Set(current);
+          next.add(transactionId);
+          return next;
+        });
+        return false;
+      } finally {
+        detailInFlightRef.current.delete(transactionId);
+      }
+    },
+    [fileHash, summary.mlModelAvailable],
+  );
+
+  const loadRelatedForTransaction = useCallback(
+    async (transactionId: string) => {
+      if (relatedByIdRef.current.has(transactionId)) {
+        return;
+      }
+
+      const relatedHeuristic = await fetchRelatedTransactions(
+        fileHash,
+        transactionId,
+        false,
+      );
+
+      setRelatedById((current) => {
+        const next = new Map(current);
+        next.set(transactionId, relatedHeuristic);
+        return next;
+      });
+    },
+    [fileHash],
+  );
+
+  useLayoutEffect(() => {
+    if (!activeId) {
+      setEnrichingTransactionId(null);
+      return;
+    }
+
+    if (enrichedTransactionIds.has(activeId)) {
+      setEnrichingTransactionId(null);
+      return;
+    }
+
+    setEnrichingTransactionId(activeId);
+  }, [activeId, enrichedTransactionIds]);
+
+  useEffect(() => {
+    if (!activeId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function onActiveTransactionChange() {
+      const needsDetail = !enrichedTransactionIdsRef.current.has(activeId);
+
+      if (needsDetail) {
+        await enrichTransactionDetail(activeId);
+        if (!cancelled) {
+          setEnrichingTransactionId(null);
+        }
+      }
+
+      if (!cancelled) {
+        await loadRelatedForTransaction(activeId).catch(() => undefined);
+      }
+    }
+
+    void onActiveTransactionChange();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, enrichTransactionDetail, loadRelatedForTransaction]);
+
+  const activeFlaggedCount = useModel
+    ? summary.modelFlaggedCount
+    : summary.flaggedCount;
+  const activeQueueStats = useModel
+    ? summary.modelFlaggedQueueStats
+    : summary.flaggedQueueStats;
+
+  const transactions = useMemo(
+    () =>
+      flaggedTransactionsFrom(useModel ? modelById : heuristicById),
+    [heuristicById, modelById, useModel],
+  );
+
   const heuristicIndex = useMemo(
-    () => buildTransactionIndex(reviewData.heuristic.allItems),
-    [reviewData.heuristic.allItems],
+    () => buildTransactionIndex(Array.from(heuristicById.values())),
+    [heuristicById],
   );
   const modelIndex = useMemo(
-    () =>
-      reviewData.model
-        ? buildTransactionIndex(reviewData.model.allItems)
-        : new Map<string, TransactionFlag>(),
-    [reviewData.model],
+    () => buildTransactionIndex(Array.from(modelById.values())),
+    [modelById],
   );
   const resolvedSortMode = useMemo(
     () => resolveRiskSortMode(sortMode, useModel),
@@ -335,10 +707,6 @@ export function ReviewQueue({
       ]),
     );
   }, [heuristicIndex, modelIndex, resolvedSortMode]);
-  const displayIndex = useMemo(
-    () => (useModel && reviewData.model ? modelIndex : heuristicIndex),
-    [heuristicIndex, modelIndex, reviewData.model, useModel],
-  );
   const activeTuning = riskTuningByMode[sortMode];
   const effectiveRiskThreshold = useMemo(
     () =>
@@ -352,17 +720,13 @@ export function ReviewQueue({
     () => sortTransactionsByScore(transactions, scoreIndex),
     [scoreIndex, transactions],
   );
-  const allItems = useMemo(
-    () =>
-      mergeScoringWithDecisions(
-        reviewData.heuristic.allItems.map(
-          (transaction) =>
-            displayIndex.get(transaction.transactionId) ?? transaction,
-        ),
-        collectDecisions(transactions),
-      ),
-    [displayIndex, reviewData.heuristic.allItems, transactions],
-  );
+  const networkTransactions = useMemo(() => {
+    if (!activeId) {
+      return Array.from(heuristicById.values());
+    }
+
+    return relatedById.get(activeId) ?? Array.from(heuristicById.values());
+  }, [activeId, heuristicById, relatedById]);
 
   const searchScopeKeys = useMemo(() => {
     if (searchMode === "single") {
@@ -451,6 +815,15 @@ export function ReviewQueue({
     visibleTransactions.find(
       (transaction) => transaction.transactionId === activeId,
     ) ?? visibleTransactions[0];
+  const isReasonsLoading = Boolean(
+    activeTransaction &&
+      enrichingTransactionId === activeTransaction.transactionId,
+  );
+  const reasonsLoadError = activeTransaction
+    ? enrichmentFailedIds.has(activeTransaction.transactionId)
+      ? "Could not load the risk breakdown for this transaction."
+      : null
+    : null;
 
   const reviewableTransactionIds = useMemo(
     () => new Set(transactions.map((transaction) => transaction.transactionId)),
@@ -468,119 +841,101 @@ export function ReviewQueue({
     queryKey: ["card-analysis", fileHash, activeTransaction?.cardId, useModel],
   });
 
-  const queueStats = useMemo(() => {
-    return transactions.reduce(
-      (stats, transaction) => {
-        stats[transaction.decision] += 1;
-        return stats;
-      },
-      { approved: 0, dismissed: 0, escalated: 0, pending: 0 } as Record<
-        ReviewDecision,
-        number
-      >,
-    );
-  }, [transactions]);
-
   const queueFilterOptions = useMemo(
     () =>
       filterOptions.map((option) => {
         const count =
-          option.value === "all" ? transactions.length : queueStats[option.value];
+          option.value === "all"
+            ? activeFlaggedCount
+            : activeQueueStats[option.value];
 
         return {
           ...option,
           label: `${option.label} (${count})`,
         };
       }),
-    [queueStats, transactions.length],
+    [activeFlaggedCount, activeQueueStats],
   );
 
-  const activeScoringSnapshot =
-    useModel && reviewData.model ? reviewData.model : reviewData.heuristic
-  const totalScoredCount = activeScoringSnapshot.allItems.length
-  const queuedCount = transactions.length
-  const notQueuedCount = Math.max(0, totalScoredCount - queuedCount)
-  const reviewedCount = queuedCount - queueStats.pending
-  const scorerLabel = useModel ? 'ML model' : 'Heuristic'
+  const totalScoredCount = summary.totalTransactions;
+  const queuedCount = activeFlaggedCount;
+  const notQueuedCount = Math.max(0, totalScoredCount - queuedCount);
+  const reviewedCount =
+    activeQueueStats.approved +
+    activeQueueStats.dismissed +
+    activeQueueStats.escalated;
+  const scorerLabel = useModel ? "ML model" : "Heuristic";
+  const activeQueueProgress = useModel
+    ? {
+        loaded: queueLoad.progress.modelLoaded,
+        total: queueLoad.progress.modelTotal,
+      }
+    : {
+        loaded: queueLoad.progress.heuristicLoaded,
+        total: queueLoad.progress.heuristicTotal,
+      };
+  const isQueueLoading = queueLoad.status === "loading";
 
   const statusContextLine = useMemo(() => {
-    const filtersActive =
-      filter !== 'pending' ||
-      query.trim() !== '' ||
-      networkFocus !== null ||
-      effectiveRiskThreshold > 0
+    if (isQueueLoading && activeQueueProgress.total > 0) {
+      return `Loading flagged queue… ${activeQueueProgress.loaded.toLocaleString()} / ${activeQueueProgress.total.toLocaleString()}`;
+    }
 
-    if (filtersActive && visibleTransactions.length !== queuedCount) {
-      return `Showing ${visibleTransactions.length.toLocaleString()} of ${queuedCount.toLocaleString()} flagged (filters active)`
+    if (isQueueLoading) {
+      return "Loading flagged queue…";
+    }
+
+    const filtersActive =
+      filter !== "pending" ||
+      query.trim() !== "" ||
+      networkFocus !== null ||
+      effectiveRiskThreshold > 0;
+
+    if (filtersActive && visibleTransactions.length !== transactions.length) {
+      return `Showing ${visibleTransactions.length.toLocaleString()} of ${transactions.length.toLocaleString()} flagged (filters active)`;
     }
 
     if (reviewedCount > 0) {
-      return `${queueStats.pending.toLocaleString()} still to review · ${reviewedCount.toLocaleString()} reviewed`
+      const reviewedTotal =
+        activeQueueStats.approved +
+        activeQueueStats.dismissed +
+        activeQueueStats.escalated;
+      return `${activeQueueStats.pending.toLocaleString()} still to review · ${reviewedTotal.toLocaleString()} reviewed`;
     }
 
     if (notQueuedCount > 0) {
-      return `${notQueuedCount.toLocaleString()} scored with no flag (not in this list)`
+      return `${notQueuedCount.toLocaleString()} scored with no flag (not in this list)`;
     }
 
-    return null
+    return null;
   }, [
+    activeQueueProgress.loaded,
+    activeQueueProgress.total,
     effectiveRiskThreshold,
     filter,
+    isQueueLoading,
     networkFocus,
     notQueuedCount,
-    queueStats.pending,
+    activeQueueStats,
     query,
-    queuedCount,
     reviewedCount,
+    transactions.length,
     visibleTransactions.length,
-  ])
-
-  const applyScoringView = useCallback(
-    (nextUseModel: boolean, decisions: Map<string, ReviewDecision>) => {
-      const scoringSource = getScoreSource(
-        reviewData,
-        nextUseModel ? "model" : "heuristic",
-      );
-
-      if (!scoringSource) {
-        return;
-      }
-
-      setTransactions(
-        mergeScoringWithDecisions(scoringSource.items, decisions),
-      );
-    },
-    [reviewData],
-  );
-
-  useEffect(() => {
-    setUseModel(false);
-    setSortMode("active");
-    setRiskTuningByMode(defaultRiskTuning);
-    setTransactions(reviewData.heuristic.items);
-    setActiveId(reviewData.heuristic.items[0]?.transactionId ?? "");
-    setFilter("pending");
-    setSearchMode("all");
-    setSingleField("transaction_id");
-    setCustomFields(["transaction_id", "card_id", "merchant_name"]);
-    setNetworkFocus(null);
-    setHistory([]);
-  }, [fileHash, reviewData]);
-
-  useEffect(() => {
-    if (sortMode === "model" && !reviewData.model) {
-      setSortMode("active");
-    }
-  }, [reviewData.model, sortMode]);
+  ]);
 
   const handleUseModelChange = (nextUseModel: boolean) => {
-    if (nextUseModel && !reviewData.model) {
+    if (nextUseModel && !summary.mlModelAvailable) {
       return;
     }
 
     setUseModel(nextUseModel);
-    applyScoringView(nextUseModel, collectDecisions(transactions));
   };
+
+  useEffect(() => {
+    if (sortMode === "model" && !summary.mlModelAvailable) {
+      setSortMode("active");
+    }
+  }, [sortMode, summary.mlModelAvailable]);
 
   const updateRiskTuning = (
     mode: RiskSortMode,
@@ -717,13 +1072,7 @@ export function ReviewQueue({
         transactionId,
       };
 
-      setTransactions((current) =>
-        current.map((item) =>
-          item.transactionId === transactionId
-            ? { ...item, decision: nextDecision }
-            : item,
-        ),
-      );
+      updateDecision(transactionId, nextDecision);
       setHistory((previous) => [action, ...previous]);
       setActiveId(nextActiveTransaction?.transactionId ?? "");
       syncReviewDecision({
@@ -737,7 +1086,7 @@ export function ReviewQueue({
         transactionId,
       });
     },
-    [fileHash, syncReviewDecision, transactions, visibleTransactions],
+    [fileHash, syncReviewDecision, transactions, updateDecision, visibleTransactions],
   );
 
   const undo = useCallback(() => {
@@ -747,13 +1096,7 @@ export function ReviewQueue({
       return;
     }
 
-    setTransactions((current) =>
-      current.map((transaction) =>
-        transaction.transactionId === lastAction.transactionId
-          ? { ...transaction, decision: lastAction.previousDecision }
-          : transaction,
-      ),
-    );
+    updateDecision(lastAction.transactionId, lastAction.previousDecision);
     setHistory(rest);
     setActiveId(lastAction.transactionId);
     syncReviewDecision({
@@ -763,7 +1106,7 @@ export function ReviewQueue({
       rollbackHistory: (current) => [lastAction, ...current],
       transactionId: lastAction.transactionId,
     });
-  }, [fileHash, history, syncReviewDecision]);
+  }, [fileHash, history, syncReviewDecision, updateDecision]);
 
   const moveActive = useCallback(
     (direction: 1 | -1) => {
@@ -832,6 +1175,31 @@ export function ReviewQueue({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeTransaction, decide, moveActive, undo]);
+
+  if (queueLoad.status === "loading" && heuristicById.size === 0) {
+    return (
+      <div className="app-shell review-shell">
+        <main className="workspace">
+          <p className="empty-copy">{statusContextLine ?? "Loading review queue…"}</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (queueLoad.status === "error" && heuristicById.size === 0) {
+    return (
+      <div className="app-shell review-shell">
+        <main className="workspace">
+          <p className="empty-copy" role="alert">
+            {queueLoad.error ?? "Could not load review queue."}
+          </p>
+          <Button onClick={onReset} size="sm" variant="outline">
+            Upload CSV
+          </Button>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell review-shell">
@@ -1050,7 +1418,7 @@ export function ReviewQueue({
                 <input
                   checked={useModel}
                   className="scoring-switch-input"
-                  disabled={!reviewData.mlModelAvailable || !reviewData.model}
+                  disabled={!summary.mlModelAvailable}
                   onChange={(event) =>
                     handleUseModelChange(event.target.checked)
                   }
@@ -1114,7 +1482,7 @@ export function ReviewQueue({
             searchQuery={query}
             sortMode={sortMode}
             sortModeOptions={sortModeOptions}
-            sortModeDisabled={!reviewData.model}
+            sortModeDisabled={!summary.mlModelAvailable}
             transactions={visibleTransactions}
           />
 
@@ -1127,13 +1495,15 @@ export function ReviewQueue({
                   : null
               }
               isCardAnalysisLoading={activeCardAnalysisQuery.isFetching}
+              isReasonsLoading={isReasonsLoading}
               onDecide={decide}
               onFilterCardCountry={filterByCardCountry}
               onFilterByField={filterByTransactionField}
               onFocusRelatedTransactions={focusRelatedTransactions}
               onSelectTransaction={setActiveId}
+              reasonsLoadError={reasonsLoadError}
               reviewableTransactionIds={reviewableTransactionIds}
-              transactions={allItems}
+              transactions={networkTransactions}
               transaction={activeTransaction}
             />
           ) : (

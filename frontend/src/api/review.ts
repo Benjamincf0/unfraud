@@ -1,4 +1,10 @@
-import type { DualReviewDataResult } from '../lib/scoringViews'
+import type {
+  FlaggedQueueStats,
+  ReviewSummary,
+  ReviewSessionData,
+} from '../lib/scoringViews'
+import { emptyFlaggedQueueStats } from '../lib/scoringViews'
+import { QUEUE_FETCH_PAGE_SIZE } from '../lib/scoringViews'
 import type {
   CardAnalysis,
   ReviewLogEntry,
@@ -7,20 +13,70 @@ import type {
   TransactionFlag,
 } from '../types'
 
-export type ReviewDataResult = DualReviewDataResult
+export type { ReviewSessionData, ReviewSummary }
 
 type BackendUploadResponse = {
   file_hash: string
   message: string
 }
 
-type BackendFraudAnalysis = {
+type BackendFlaggedQueueStats = {
+  pending: number
+  approved: number
+  dismissed: number
+  escalated: number
+}
+
+type BackendSummaryResponse = {
+  total_transactions: number
+  flagged_count: number
+  model_flagged_count?: number
+  ml_model_available: boolean
+  flagged_queue_stats?: BackendFlaggedQueueStats
+  model_flagged_queue_stats?: BackendFlaggedQueueStats
+}
+
+type BackendQueuePageResponse = {
+  items: BackendQueueItem[]
+  total: number
+  offset: number
+  limit?: number | null
+}
+
+type BackendQueueItem = {
   transaction_id: string
+  timestamp: string
+  card_id: string
+  amount: number
+  merchant_name: string
+  merchant_category: string
+  channel: 'online' | 'in_person' | 'atm'
+  cardholder_country: string
+  merchant_country: string
+  device_id?: string | null
+  ip_address?: string | null
   is_fraud: boolean
   fraud_score: number
+  fraud_reasons?: string[]
+  review_decision?: string
+  reviewed_at?: string | null
+  reviewer_notes?: string | null
+  card_baseline?: BackendCardBaseline
+}
+
+type BackendScorerDetail = {
+  fraud_score: number
+  is_fraud: boolean
   reasons?: string[]
   score_breakdown?: BackendRiskSignal[]
   card_baseline?: BackendCardBaseline
+  cross_card_signals?: Record<string, unknown>
+  graph_features?: Record<string, number>
+}
+
+type BackendTransactionDetailResponse = BackendQueueItem & {
+  heuristic: BackendScorerDetail
+  model?: BackendScorerDetail | null
 }
 
 type BackendRiskSignal = {
@@ -38,7 +94,7 @@ type BackendCardBaseline = {
   usual_countries?: string[]
 }
 
-type CsvTransaction = {
+type BackendAnalyzedTransaction = {
   transaction_id: string
   timestamp: string
   card_id: string
@@ -50,19 +106,6 @@ type CsvTransaction = {
   merchant_country: string
   device_id?: string
   ip_address?: string
-}
-
-type AnalyzedCsvTransaction = CsvTransaction & {
-  fraud_reasons: string[]
-  fraud_score: number
-  is_fraud: boolean
-  review_decision?: ReviewDecision
-  reviewed_at?: string
-  reviewer_notes?: string
-  score_breakdown?: BackendRiskSignal[]
-}
-
-type BackendAnalyzedTransaction = CsvTransaction & {
   fraud_reasons?: string[]
   fraud_score: number
   is_fraud: boolean
@@ -77,13 +120,25 @@ type BackendReviewLogEntry = {
   reviewed_at: string
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
-
-type ScoringStatusResponse = {
-  heuristic: boolean
-  ml_model_path?: string
-  ml_model_available: boolean
+export type TransactionDetailResult = {
+  transactionId: string
+  heuristic: BackendScorerDetail
+  model: BackendScorerDetail | null
 }
+
+export type ReviewQueueLoadResult = {
+  heuristic: TransactionFlag[]
+  model: TransactionFlag[]
+}
+
+export type ReviewQueueLoadProgress = {
+  heuristicLoaded: number
+  heuristicTotal: number
+  modelLoaded: number
+  modelTotal: number
+}
+
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
 function withUseModel(url: string, useModel: boolean) {
   if (!useModel) {
@@ -94,17 +149,277 @@ function withUseModel(url: string, useModel: boolean) {
   return `${url}${separator}use_model=true`
 }
 
-export async function fetchScoringStatus(): Promise<ScoringStatusResponse> {
-  const response = await fetch(`${apiBaseUrl}/scoring/status`)
+function buildQueueUrl(
+  fileHash: string,
+  {
+    flaggedOnly = true,
+    limit,
+    offset = 0,
+    slim = false,
+    transactionId,
+    useModel = false,
+  }: {
+    flaggedOnly?: boolean
+    limit?: number
+    offset?: number
+    slim?: boolean
+    transactionId?: string
+    useModel?: boolean
+  } = {},
+) {
+  const params = new URLSearchParams()
 
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Scoring status failed'))
+  if (useModel) {
+    params.set('use_model', 'true')
   }
 
-  return (await response.json()) as ScoringStatusResponse
+  if (!flaggedOnly) {
+    params.set('flagged_only', 'false')
+  }
+
+  if (slim) {
+    params.set('slim', 'true')
+  }
+
+  if (typeof limit === 'number') {
+    params.set('limit', String(limit))
+  }
+
+  if (offset > 0) {
+    params.set('offset', String(offset))
+  }
+
+  if (transactionId) {
+    params.set('transaction_id', transactionId)
+  }
+
+  const query = params.toString()
+  return `${apiBaseUrl}/analysis/queue/${fileHash}${query ? `?${query}` : ''}`
 }
 
-export async function uploadTransactionsCsv(file: File): Promise<ReviewDataResult> {
+export async function fetchReviewSummary(fileHash: string): Promise<ReviewSummary> {
+  const response = await fetch(`${apiBaseUrl}/analysis/summary/${fileHash}`)
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Summary failed'))
+  }
+
+  const payload = (await response.json()) as BackendSummaryResponse
+
+  return {
+    totalTransactions: payload.total_transactions,
+    flaggedCount: payload.flagged_count,
+    modelFlaggedCount: payload.model_flagged_count ?? 0,
+    mlModelAvailable: payload.ml_model_available,
+    flaggedQueueStats: mapFlaggedQueueStats(
+      payload.flagged_queue_stats,
+      payload.flagged_count,
+    ),
+    modelFlaggedQueueStats: mapFlaggedQueueStats(
+      payload.model_flagged_queue_stats,
+      payload.model_flagged_count ?? 0,
+    ),
+  }
+}
+
+export async function fetchReviewQueuePage(
+  fileHash: string,
+  {
+    flaggedOnly = true,
+    limit,
+    offset = 0,
+    slim = false,
+    transactionId,
+    useModel = false,
+  }: {
+    flaggedOnly?: boolean
+    limit?: number
+    offset?: number
+    slim?: boolean
+    transactionId?: string
+    useModel?: boolean
+  } = {},
+): Promise<{ items: TransactionFlag[]; total: number }> {
+  const response = await fetch(
+    buildQueueUrl(fileHash, {
+      flaggedOnly,
+      limit,
+      offset,
+      slim,
+      transactionId,
+      useModel,
+    }),
+  )
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Queue fetch failed'))
+  }
+
+  const payload = (await response.json()) as BackendQueuePageResponse
+
+  return {
+    items: payload.items.map((item) => mapQueueItemToTransactionFlag(item)),
+    total: payload.total,
+  }
+}
+
+export async function fetchAllReviewQueue(
+  fileHash: string,
+  {
+    onChunk,
+    onProgress,
+    useModel = false,
+  }: {
+    onChunk?: (items: TransactionFlag[]) => void
+    onProgress?: (loaded: number, total: number) => void
+    useModel?: boolean
+  } = {},
+): Promise<TransactionFlag[]> {
+  const firstPage = await fetchReviewQueuePage(fileHash, {
+    limit: QUEUE_FETCH_PAGE_SIZE,
+    offset: 0,
+    slim: true,
+    useModel,
+  })
+
+  const items = [...firstPage.items]
+  onChunk?.(firstPage.items)
+  onProgress?.(items.length, firstPage.total)
+
+  let offset = items.length
+  while (offset < firstPage.total) {
+    const page = await fetchReviewQueuePage(fileHash, {
+      limit: QUEUE_FETCH_PAGE_SIZE,
+      offset,
+      slim: true,
+      useModel,
+    })
+
+    items.push(...page.items)
+    onChunk?.(page.items)
+    offset += page.items.length
+    onProgress?.(offset, firstPage.total)
+  }
+
+  return items
+}
+
+export async function fetchFullReviewQueue(
+  fileHash: string,
+  summary: ReviewSummary,
+  {
+    onHeuristicChunk,
+    onModelChunk,
+    onProgress,
+  }: {
+    onHeuristicChunk?: (items: TransactionFlag[]) => void
+    onModelChunk?: (items: TransactionFlag[]) => void
+    onProgress?: (progress: ReviewQueueLoadProgress) => void
+  } = {},
+): Promise<ReviewQueueLoadResult> {
+  const heuristic = await fetchAllReviewQueue(fileHash, {
+    onChunk: onHeuristicChunk,
+    onProgress: (loaded, total) => {
+      onProgress?.({
+        heuristicLoaded: loaded,
+        heuristicTotal: total,
+        modelLoaded: 0,
+        modelTotal: summary.modelFlaggedCount,
+      })
+    },
+  })
+
+  if (!summary.mlModelAvailable) {
+    onProgress?.({
+      heuristicLoaded: heuristic.length,
+      heuristicTotal: heuristic.length,
+      modelLoaded: 0,
+      modelTotal: 0,
+    })
+
+    return { heuristic, model: [] }
+  }
+
+  try {
+    const model = await fetchAllReviewQueue(fileHash, {
+      onChunk: onModelChunk,
+      onProgress: (loaded, total) => {
+        onProgress?.({
+          heuristicLoaded: heuristic.length,
+          heuristicTotal: heuristic.length,
+          modelLoaded: loaded,
+          modelTotal: total,
+        })
+      },
+      useModel: true,
+    })
+
+    return { heuristic, model }
+  } catch {
+    onProgress?.({
+      heuristicLoaded: heuristic.length,
+      heuristicTotal: heuristic.length,
+      modelLoaded: 0,
+      modelTotal: summary.modelFlaggedCount,
+    })
+
+    return { heuristic, model: [] }
+  }
+}
+
+export async function fetchTransactionDetail(
+  fileHash: string,
+  transactionId: string,
+): Promise<TransactionDetailResult> {
+  const response = await fetch(
+    `${apiBaseUrl}/analysis/transaction/${fileHash}/${encodeURIComponent(transactionId)}`,
+  )
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Transaction detail failed'))
+  }
+
+  const payload = (await response.json()) as BackendTransactionDetailResponse
+
+  return {
+    transactionId: payload.transaction_id,
+    heuristic: payload.heuristic,
+    model: payload.model ?? null,
+  }
+}
+
+export async function fetchRelatedTransactions(
+  fileHash: string,
+  transactionId: string,
+  useModel = false,
+): Promise<TransactionFlag[]> {
+  const response = await fetch(
+    withUseModel(
+      `${apiBaseUrl}/analysis/related/${fileHash}/${encodeURIComponent(transactionId)}`,
+      useModel,
+    ),
+  )
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Related transactions failed'))
+  }
+
+  const payload = (await response.json()) as { items: BackendQueueItem[] }
+
+  return payload.items.map((item) => mapQueueItemToTransactionFlag(item))
+}
+
+export async function openReviewSession(fileHash: string): Promise<ReviewSessionData> {
+  const summary = await fetchReviewSummary(fileHash)
+
+  return {
+    fileHash,
+    summary,
+    source: 'cache',
+  }
+}
+
+export async function uploadTransactionsCsv(file: File): Promise<ReviewSessionData> {
   const formData = new FormData()
   formData.append('file', file)
 
@@ -123,63 +438,12 @@ export async function uploadTransactionsCsv(file: File): Promise<ReviewDataResul
     throw new Error('Upload returned an invalid file hash')
   }
 
-  const result = await fetchReviewDataByHash(uploadPayload.file_hash)
+  const summary = await fetchReviewSummary(uploadPayload.file_hash)
 
   return {
-    ...result,
+    fileHash: uploadPayload.file_hash,
+    summary,
     source: 'upload',
-  }
-}
-
-async function fetchScoringSnapshot(
-  fileHash: string,
-  useModel: boolean,
-): Promise<{ allItems: TransactionFlag[]; items: TransactionFlag[] }> {
-  const exportResponse = await fetch(
-    withUseModel(`${apiBaseUrl}/export/${fileHash}`, useModel),
-  )
-
-  if (!exportResponse.ok) {
-    throw new Error(await getErrorMessage(exportResponse, 'Cached result failed'))
-  }
-
-  const csv = await exportResponse.text()
-  const analyzedTransactions = parseAnalyzedTransactionsCsv(csv)
-
-  return {
-    allItems: mapAnalyzedTransactions(analyzedTransactions, {
-      suspiciousOnly: false,
-    }),
-    items: mapAnalyzedTransactions(analyzedTransactions, {
-      suspiciousOnly: true,
-    }),
-  }
-}
-
-export async function fetchReviewDataByHash(
-  fileHash: string,
-): Promise<ReviewDataResult> {
-  const scoringStatus = await fetchScoringStatus()
-  const heuristic = await fetchScoringSnapshot(fileHash, false)
-
-  let model: ReviewDataResult['model'] = null
-
-  if (scoringStatus.ml_model_available) {
-    try {
-      model = await fetchScoringSnapshot(fileHash, true)
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('503')) {
-        throw error
-      }
-    }
-  }
-
-  return {
-    fileHash,
-    heuristic,
-    mlModelAvailable: scoringStatus.ml_model_available,
-    model,
-    source: 'cache',
   }
 }
 
@@ -264,161 +528,60 @@ export async function fetchCardAnalysis({
   return toCardAnalysis(cardId, payload.map(normalizeCardTransactionPayload))
 }
 
-function parseAnalyzedTransactionsCsv(csv: string): AnalyzedCsvTransaction[] {
-  const rows = parseCsvRows(csv)
-
-  if (rows.length < 2) {
-    throw new Error('Cached result is empty')
-  }
-
-  const [headers, ...dataRows] = rows
-  const headerIndex = new Map(headers.map((header, index) => [header, index]))
-  const requiredHeaders = [
-    'transaction_id',
-    'timestamp',
-    'card_id',
-    'amount',
-    'merchant_name',
-    'merchant_category',
-    'channel',
-    'cardholder_country',
-    'merchant_country',
-    'is_fraud',
-    'fraud_score',
-    'fraud_reasons',
-  ]
-  const missingHeaders = requiredHeaders.filter(
-    (header) => !headerIndex.has(header),
+export function mapQueueItemToTransactionFlag(item: BackendQueueItem): TransactionFlag {
+  return toTransactionFlag(
+    item,
+    {
+      fraud_score: item.fraud_score,
+      is_fraud: item.is_fraud,
+      reasons: item.fraud_reasons ?? [],
+      score_breakdown: [],
+      transaction_id: item.transaction_id,
+      card_baseline: item.card_baseline,
+    },
+    undefined,
+    parseReviewDecision(item.review_decision ?? ''),
+    emptyToUndefined(item.reviewed_at ?? undefined),
+    emptyToUndefined(item.reviewer_notes ?? undefined),
   )
-
-  if (missingHeaders.length > 0) {
-    throw new Error(
-      `Cached result is missing required columns: ${missingHeaders.join(', ')}`,
-    )
-  }
-
-  return dataRows
-    .filter((row) => row.some((value) => value.trim()))
-    .map((row) => {
-      const get = (header: string) => row[headerIndex.get(header) ?? -1] ?? ''
-      const getOptional = (header: string) =>
-        headerIndex.has(header) ? get(header) : ''
-      const amount = Number(get('amount'))
-      const fraudScore = Number(get('fraud_score'))
-
-      if (!Number.isFinite(amount)) {
-        throw new Error(`Invalid amount for transaction ${get('transaction_id')}`)
-      }
-
-      if (!Number.isFinite(fraudScore)) {
-        throw new Error(
-          `Invalid fraud score for transaction ${get('transaction_id')}`,
-        )
-      }
-
-      return {
-        amount,
-        card_id: get('card_id'),
-        cardholder_country: get('cardholder_country'),
-        channel: normalizeChannel(get('channel')),
-        device_id: emptyToUndefined(get('device_id')),
-        fraud_reasons: parseFraudReasons(get('fraud_reasons')),
-        fraud_score: fraudScore,
-        ip_address: emptyToUndefined(get('ip_address')),
-        is_fraud: parseBoolean(get('is_fraud')),
-        merchant_category: get('merchant_category'),
-        merchant_country: get('merchant_country'),
-        merchant_name: get('merchant_name'),
-        review_decision: parseReviewDecision(getOptional('review_decision')),
-        reviewed_at: emptyToUndefined(getOptional('reviewed_at')),
-        reviewer_notes: emptyToUndefined(getOptional('reviewer_notes')),
-        score_breakdown: parseScoreBreakdown(getOptional('score_breakdown')),
-        timestamp: get('timestamp'),
-        transaction_id: get('transaction_id'),
-      }
-    })
 }
 
-function parseCsvRows(csv: string): string[][] {
-  const rows: string[][] = []
-  let row: string[] = []
-  let field = ''
-  let inQuotes = false
-
-  for (let index = 0; index < csv.length; index += 1) {
-    const char = csv[index]
-    const nextChar = csv[index + 1]
-
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        field += '"'
-        index += 1
-      } else {
-        inQuotes = !inQuotes
-      }
-      continue
-    }
-
-    if (char === ',' && !inQuotes) {
-      row.push(field)
-      field = ''
-      continue
-    }
-
-    if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (char === '\r' && nextChar === '\n') {
-        index += 1
-      }
-      row.push(field)
-      rows.push(row)
-      row = []
-      field = ''
-      continue
-    }
-
-    field += char
+export function applyScorerDetailToTransaction(
+  transaction: TransactionFlag,
+  detail: BackendScorerDetail,
+  transactionId: string,
+): TransactionFlag {
+  return {
+    ...transaction,
+    score: detail.fraud_score,
+    label: getRiskLabel(detail.fraud_score),
+    isFraud: detail.is_fraud,
+    reasons: buildReasons({
+      fraud_score: detail.fraud_score,
+      is_fraud: detail.is_fraud,
+      reasons: detail.reasons ?? [],
+      score_breakdown: detail.score_breakdown,
+      transaction_id: transactionId,
+    }),
+    cardContext: detail.card_baseline
+      ? {
+          medianAmount:
+            typeof detail.card_baseline.typical_amount === 'number'
+              ? detail.card_baseline.typical_amount
+              : transaction.cardContext.medianAmount,
+          previousTransactions:
+            typeof detail.card_baseline.history_count === 'number'
+              ? detail.card_baseline.history_count
+              : transaction.cardContext.previousTransactions,
+          usualCategories:
+            detail.card_baseline.usual_categories ??
+            transaction.cardContext.usualCategories,
+          usualCountries:
+            detail.card_baseline.usual_countries ??
+            transaction.cardContext.usualCountries,
+        }
+      : transaction.cardContext,
   }
-
-  if (field || row.length > 0) {
-    row.push(field)
-    rows.push(row)
-  }
-
-  return rows
-}
-
-function mapAnalyzedTransactions(
-  transactions: AnalyzedCsvTransaction[],
-  { suspiciousOnly }: { suspiciousOnly: boolean },
-): TransactionFlag[] {
-  const contextByCard = buildCardContext(transactions)
-
-  const mappedTransactions = transactions
-    .map((transaction) =>
-      toTransactionFlag(
-        transaction,
-        {
-          fraud_score: transaction.fraud_score,
-          is_fraud: transaction.is_fraud,
-          score_breakdown: transaction.score_breakdown,
-          reasons: transaction.fraud_reasons,
-          transaction_id: transaction.transaction_id,
-        },
-        contextByCard.get(transaction.card_id),
-        transaction.review_decision,
-        transaction.reviewed_at,
-        transaction.reviewer_notes,
-      ),
-    )
-    .map(stripFraudCandidateMarker)
-
-  return (suspiciousOnly
-    ? mappedTransactions.filter(
-        (transaction) => transaction.isFraud || transaction.score > 0,
-      )
-    : mappedTransactions
-  )
-    .sort((first, second) => second.score - first.score)
 }
 
 function toCardAnalysis(
@@ -528,17 +691,16 @@ function getBackendReasons(transaction: BackendAnalyzedTransaction) {
   return transaction.fraud_reasons ?? transaction.reasons ?? []
 }
 
-function stripFraudCandidateMarker({
-  isFraudCandidate,
-  ...transaction
-}: TransactionFlag & { isFraudCandidate: boolean }): TransactionFlag {
-  void isFraudCandidate
-  return transaction
-}
-
 function toTransactionFlag(
-  transaction: CsvTransaction,
-  analysis: BackendFraudAnalysis,
+  transaction: BackendQueueItem,
+  analysis: {
+    fraud_score: number
+    is_fraud: boolean
+    reasons: string[]
+    score_breakdown?: BackendRiskSignal[]
+    transaction_id: string
+    card_baseline?: BackendCardBaseline
+  },
   cardContext = {
     medianAmount: 0,
     previousTransactions: 0,
@@ -548,7 +710,7 @@ function toTransactionFlag(
   decision: ReviewDecision = 'pending',
   reviewedAt?: string,
   reviewerNotes?: string,
-): TransactionFlag & { isFraudCandidate: boolean } {
+): TransactionFlag {
   const backendContext = analysis.card_baseline
     ? {
         medianAmount:
@@ -573,9 +735,9 @@ function toTransactionFlag(
     cardholderCountry: transaction.cardholder_country,
     channel: transaction.channel,
     decision,
-    deviceId: transaction.device_id,
-    ipAddress: transaction.ip_address,
-    isFraudCandidate: analysis.is_fraud,
+    deviceId: emptyToUndefined(transaction.device_id ?? undefined),
+    ipAddress: emptyToUndefined(transaction.ip_address ?? undefined),
+    isFraud: analysis.is_fraud,
     label: getRiskLabel(analysis.fraud_score),
     merchantCategory: transaction.merchant_category,
     merchantCountry: transaction.merchant_country,
@@ -583,7 +745,6 @@ function toTransactionFlag(
     reasons: buildReasons(analysis),
     reviewedAt,
     reviewerNotes,
-    isFraud: analysis.is_fraud,
     score: analysis.fraud_score,
     timestamp: transaction.timestamp,
     transactionId: transaction.transaction_id,
@@ -602,44 +763,6 @@ function backendActionToDecision(
   return 'escalated'
 }
 
-function buildCardContext(transactions: CsvTransaction[]) {
-  const grouped = new Map<string, CsvTransaction[]>()
-
-  for (const transaction of transactions) {
-    grouped.set(transaction.card_id, [
-      ...(grouped.get(transaction.card_id) ?? []),
-      transaction,
-    ])
-  }
-
-  return new Map(
-    Array.from(grouped.entries()).map(([cardId, cardTransactions]) => {
-      const amounts = cardTransactions
-        .map((transaction) => transaction.amount)
-        .sort((first, second) => first - second)
-      const mid = Math.floor(amounts.length / 2)
-      const medianAmount =
-        amounts.length % 2 === 0
-          ? (amounts[mid - 1] + amounts[mid]) / 2
-          : amounts[mid]
-
-      return [
-        cardId,
-        {
-          medianAmount,
-          previousTransactions: cardTransactions.length,
-          usualCategories: getMostCommon(
-            cardTransactions.map((transaction) => transaction.merchant_category),
-          ),
-          usualCountries: getMostCommon(
-            cardTransactions.map((transaction) => transaction.merchant_country),
-          ),
-        },
-      ]
-    }),
-  )
-}
-
 function getMostCommon(values: string[], limit = 4) {
   const counts = new Map<string, number>()
 
@@ -653,7 +776,13 @@ function getMostCommon(values: string[], limit = 4) {
     .map(([value]) => value)
 }
 
-function buildReasons(analysis: BackendFraudAnalysis): RiskReason[] {
+function buildReasons(analysis: {
+  fraud_score: number
+  is_fraud: boolean
+  reasons: string[]
+  score_breakdown?: BackendRiskSignal[]
+  transaction_id: string
+}): RiskReason[] {
   const scoreBreakdown = Array.isArray(analysis.score_breakdown)
     ? analysis.score_breakdown.filter((reason) => reason.label || reason.detail)
     : []
@@ -727,9 +856,7 @@ function getRiskLabel(score: number): TransactionFlag['label'] {
   return 'low'
 }
 
-function decisionToBackendAction(
-  decision: ReviewDecision,
-) {
+function decisionToBackendAction(decision: ReviewDecision) {
   if (decision === 'pending') {
     return 'pending'
   }
@@ -759,7 +886,7 @@ async function getErrorMessage(response: Response, fallback: string) {
   return `${fallback} with status ${response.status}`
 }
 
-function normalizeChannel(channel: string): CsvTransaction['channel'] {
+function normalizeChannel(channel: string): BackendQueueItem['channel'] {
   if (channel === 'online' || channel === 'in_person' || channel === 'atm') {
     return channel
   }
@@ -767,19 +894,27 @@ function normalizeChannel(channel: string): CsvTransaction['channel'] {
   throw new Error(`Invalid channel: ${channel}`)
 }
 
-function emptyToUndefined(value: string) {
-  return value.trim() === '' ? undefined : value
+function emptyToUndefined(value: string | undefined) {
+  return value && value.trim() !== '' ? value : undefined
 }
 
-function parseBoolean(value: string) {
-  return value.trim().toLowerCase() === 'true'
-}
+function mapFlaggedQueueStats(
+  stats: BackendFlaggedQueueStats | undefined,
+  flaggedCount: number,
+): FlaggedQueueStats {
+  if (!stats) {
+    return {
+      ...emptyFlaggedQueueStats,
+      pending: flaggedCount,
+    }
+  }
 
-function parseFraudReasons(value: string) {
-  return value
-    .split(';')
-    .map((reason) => reason.trim())
-    .filter(Boolean)
+  return {
+    pending: stats.pending,
+    approved: stats.approved,
+    dismissed: stats.dismissed,
+    escalated: stats.escalated,
+  }
 }
 
 function parseReviewDecision(value: string): ReviewDecision {
@@ -796,25 +931,6 @@ function parseReviewDecision(value: string): ReviewDecision {
   }
 
   return 'pending'
-}
-
-function parseScoreBreakdown(value: string): BackendRiskSignal[] | undefined {
-  if (!value.trim()) {
-    return undefined
-  }
-
-  try {
-    const parsedValue = JSON.parse(value) as unknown
-    return Array.isArray(parsedValue)
-      ? parsedValue.filter(isBackendRiskSignal)
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function isBackendRiskSignal(value: unknown): value is BackendRiskSignal {
-  return isRecord(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -849,7 +965,10 @@ function readStringArray(record: Record<string, unknown>, key: string) {
   }
 
   if (typeof value === 'string') {
-    return parseFraudReasons(value)
+    return value
+      .split(';')
+      .map((reason) => reason.trim())
+      .filter(Boolean)
   }
 
   return []
@@ -862,9 +981,9 @@ function readRiskSignals(record: Record<string, unknown>, key: string) {
     return value.filter(isBackendRiskSignal)
   }
 
-  if (typeof value === 'string') {
-    return parseScoreBreakdown(value)
-  }
-
   return undefined
+}
+
+function isBackendRiskSignal(value: unknown): value is BackendRiskSignal {
+  return isRecord(value)
 }

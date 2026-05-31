@@ -3,9 +3,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
 import {
-  fetchReviewDataByHash,
+  openReviewSession,
   uploadTransactionsCsv,
-  type ReviewDataResult,
+  type ReviewSessionData,
 } from './api/review'
 import {
   clearActiveReviewSession,
@@ -16,19 +16,19 @@ import {
 } from './lib/reviewSessions'
 
 function App() {
-  const [reviewData, setReviewData] = useState<ReviewDataResult | null>(null)
+  const [session, setSession] = useState<ReviewSessionData | null>(null)
   const [sessions, setSessions] = useState(loadReviewSessions)
   const [activeFileHash, setActiveFileHash] = useState(
     loadActiveReviewSession,
   )
   const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
-  const cachedResultQuery = useQuery({
+  const sessionQuery = useQuery({
     enabled:
       !isUploadMode &&
       Boolean(activeFileHash) &&
-      reviewData?.fileHash !== activeFileHash,
-    queryFn: () => fetchReviewDataByHash(activeFileHash ?? ''),
-    queryKey: ['review-data', activeFileHash],
+      session?.fileHash !== activeFileHash,
+    queryFn: () => openReviewSession(activeFileHash ?? ''),
+    queryKey: ['review-session', activeFileHash],
   })
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadTransactionsCsv(file),
@@ -41,14 +41,14 @@ function App() {
         }),
       )
       setActiveFileHash(data.fileHash)
-      setReviewData(data)
+      setSession(data)
       setIsUploadMode(false)
     },
   })
-  const activeReviewData =
-    reviewData?.fileHash === activeFileHash
-      ? reviewData
-      : cachedResultQuery.data ?? null
+  const activeSession =
+    session?.fileHash === activeFileHash
+      ? session
+      : sessionQuery.data ?? null
 
   const uploadCsv = (file: File) => {
     uploadMutation.mutate(file)
@@ -57,13 +57,13 @@ function App() {
   const selectSession = useCallback((fileHash: string) => {
     saveActiveReviewSession(fileHash)
     setActiveFileHash(fileHash)
-    setReviewData(null)
+    setSession(null)
     setIsUploadMode(false)
   }, [])
 
   const showUploadScreen = useCallback(() => {
     clearActiveReviewSession()
-    setReviewData(null)
+    setSession(null)
     setActiveFileHash(null)
     setIsUploadMode(true)
   }, [])
@@ -74,17 +74,17 @@ function App() {
     }
   }, [activeFileHash, isUploadMode, selectSession, sessions])
 
-  if (!activeReviewData) {
+  if (!activeSession) {
     return (
       <UploadCsv
         error={
-          cachedResultQuery.error instanceof Error
-            ? cachedResultQuery.error.message
+          sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
             : uploadMutation.error instanceof Error
             ? uploadMutation.error.message
             : null
         }
-        isUploading={uploadMutation.isPending || cachedResultQuery.isFetching}
+        isUploading={uploadMutation.isPending || sessionQuery.isFetching}
         onUpload={uploadCsv}
       />
     )
@@ -92,10 +92,10 @@ function App() {
 
   return (
     <ReviewQueue
-      activeFileHash={activeReviewData.fileHash}
+      activeFileHash={activeSession.fileHash}
       onReset={showUploadScreen}
       onSelectSession={selectSession}
-      reviewData={activeReviewData}
+      session={activeSession}
       sessions={sessions}
     />
   )

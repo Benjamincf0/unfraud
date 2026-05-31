@@ -116,6 +116,72 @@ tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,
     assert "reviewer_notes" in header
     assert "reviewed_at" in header
 
+def test_analysis_summary_and_queue_endpoints():
+    csv_data = """transaction_id,timestamp,card_id,amount,merchant_name,merchant_category,channel,cardholder_country,merchant_country,device_id,ip_address
+tx_001,2026-04-25T00:00:00,card_001,12.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_002,2026-04-25T00:01:00,card_001,11.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_003,2026-04-25T00:02:00,card_001,14.0,Store A,grocery,online,US,US,dev_1,10.0.0.1
+tx_004,2026-04-25T00:03:00,card_001,120.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
+tx_005,2026-04-25T00:04:00,card_002,60.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
+tx_006,2026-04-25T00:05:00,card_003,62.0,Store A,electronics,online,US,GB,dev_1,10.0.0.1
+"""
+
+    response = client.post(
+        "/upload",
+        files={"file": ("test.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200
+    file_hash = response.json()["file_hash"]
+
+    response = client.get(f"/analysis/summary/{file_hash}")
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["total_transactions"] == 6
+    assert summary["flagged_count"] >= 1
+    assert "model_flagged_count" in summary
+    assert "ml_model_available" in summary
+    assert summary["flagged_queue_stats"]["pending"] >= 1
+    assert (
+        summary["flagged_queue_stats"]["pending"]
+        + summary["flagged_queue_stats"]["approved"]
+        + summary["flagged_queue_stats"]["dismissed"]
+        + summary["flagged_queue_stats"]["escalated"]
+        == summary["flagged_count"]
+    )
+
+    response = client.get(f"/analysis/queue/{file_hash}?limit=2")
+    assert response.status_code == 200
+    queue = response.json()
+    assert queue["total"] >= 1
+    assert len(queue["items"]) <= 2
+    assert "transaction_id" in queue["items"][0]
+    assert "fraud_score" in queue["items"][0]
+    assert "card_baseline" in queue["items"][0]
+
+    response = client.get(f"/analysis/queue/{file_hash}?limit=2&slim=true")
+    assert response.status_code == 200
+    slim_queue = response.json()
+    assert slim_queue["items"][0]["card_baseline"] == {}
+
+    tx_id = queue["items"][0]["transaction_id"]
+    response = client.get(
+        f"/analysis/queue/{file_hash}?transaction_id={tx_id}",
+    )
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 1
+
+    response = client.get(f"/analysis/transaction/{file_hash}/{tx_id}")
+    assert response.status_code == 200
+    detail = response.json()
+    assert detail["transaction_id"] == tx_id
+    assert "heuristic" in detail
+    assert "score_breakdown" in detail["heuristic"]
+
+    response = client.get(f"/analysis/related/{file_hash}/{tx_id}")
+    assert response.status_code == 200
+    related = response.json()
+    assert len(related["items"]) >= 1
+
 def test_review_endpoints():
     """Test review endpoints"""
     # Upload a file first
