@@ -315,6 +315,61 @@ tx_feedback_003,2026-04-25T00:02:00,card_feedback_003,11.0,Corner Shop,grocery,o
     assert "Previously escalated IP" not in reverted["reasons"]
     assert reverted["fraud_score"] == baseline_score
 
+
+def test_review_reason_tunes_heuristic_weights():
+    csv_data = """transaction_id,timestamp,card_id,amount,merchant_name,merchant_category,channel,cardholder_country,merchant_country,device_id,ip_address
+tx_tune_001,2026-04-25T00:00:00,card_tune_001,10.0,Store A,grocery,online,US,US,dev_tune_001,6.6.6.1
+tx_tune_002,2026-04-25T00:01:00,card_tune_001,11.0,Store A,grocery,online,US,US,dev_tune_001,6.6.6.1
+tx_tune_003,2026-04-25T00:02:00,card_tune_001,12.0,Store A,grocery,online,US,US,dev_tune_001,6.6.6.1
+tx_tune_004,2026-04-25T00:03:00,card_tune_001,80.0,Store B,electronics,online,US,US,dev_tune_002,6.6.6.2
+"""
+
+    response = client.post(
+        "/upload",
+        files={"file": ("tuning.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200
+    file_hash = response.json()["file_hash"]
+
+    response = client.get(f"/analysis/transaction/{file_hash}/tx_tune_004")
+    assert response.status_code == 200
+    baseline = response.json()["heuristic"]
+    baseline_score = baseline["fraud_score"]
+    assert any(
+        signal["code"] == "amount_outlier"
+        for signal in baseline["score_breakdown"]
+    )
+
+    response = client.post(
+        f"/review/{file_hash}/tx_tune_004/dismiss",
+        json={
+            "action": "dismiss",
+            "reviewer_notes": "Cardholder confirmed this purchase",
+            "feedback_reason_codes": ["amount_outlier"],
+            "feedback_reasoning": "Amount spikes are normal for this card.",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["feedback_reason_codes"] == ["amount_outlier"]
+    assert payload["feedback_effects"][0]["type"] == "heuristic_weight"
+    assert payload["feedback_effects"][0]["signal_code"] == "amount_outlier"
+    assert payload["feedback_effects"][0]["direction"] == "decreased"
+    assert "0.85x" in payload["feedback_effects"][0]["summary"]
+
+    response = client.get(f"/analysis/transaction/{file_hash}/tx_tune_004")
+    assert response.status_code == 200
+    tuned = response.json()["heuristic"]
+    assert tuned["fraud_score"] < baseline_score
+
+    response = client.get(f"/review-log/{file_hash}")
+    assert response.status_code == 200
+    entry = response.json()[0]
+    assert entry["feedback_reason_codes"] == ["amount_outlier"]
+    assert entry["feedback_reasoning"] == "Amount spikes are normal for this card."
+    assert entry["feedback_effects"] == payload["feedback_effects"]
+
+
 def test_error_conditions():
     """Test error handling"""
     # Test with non-existent file hash

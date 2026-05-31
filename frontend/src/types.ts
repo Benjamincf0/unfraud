@@ -15,10 +15,16 @@ export type SearchFieldKey =
 
 export type RiskReason = {
   id: string
+  code?: string
   label: string
   detail: string
   weight: number
   signalType?: 'per_card' | 'cross_card' | 'composite' | string
+}
+
+export type DecisionFeedback = {
+  reasonCodes: string[]
+  reasoning: string
 }
 
 export type TransactionFlag = {
@@ -52,7 +58,18 @@ export type ReviewLogEntry = {
   transactionId: string
   action: Exclude<ReviewDecision, 'pending'>
   reviewerNotes?: string
+  feedbackEffects: ReviewFeedbackEffect[]
   reviewedAt: string
+}
+
+export type ReviewFeedbackEffect = {
+  type: string
+  signalCode: string
+  signalLabel: string
+  direction: string
+  previousMultiplier: number
+  nextMultiplier: number
+  summary: string
 }
 
 export type CardTransaction = {
