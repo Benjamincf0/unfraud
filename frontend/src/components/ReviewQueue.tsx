@@ -18,6 +18,7 @@ type ReviewQueueProps = {
   onReset: () => void
   onSelectSession: (fileHash: string) => void
   sessions: ReviewSession[]
+  useModel: boolean
 }
 
 const filterOptions: Array<{ value: QueueFilter; label: string }> = [
@@ -44,6 +45,7 @@ export function ReviewQueue({
   onReset,
   onSelectSession,
   sessions,
+  useModel,
 }: ReviewQueueProps) {
   const [transactions, setTransactions] = useState(items)
   const [activeId, setActiveId] = useState(items[0]?.transactionId ?? '')
@@ -102,8 +104,9 @@ export function ReviewQueue({
       fetchCardAnalysis({
         cardId: activeTransaction?.cardId ?? '',
         fileHash,
+        useModel,
       }),
-    queryKey: ['card-analysis', fileHash, activeTransaction?.cardId],
+    queryKey: ['card-analysis', fileHash, activeTransaction?.cardId, useModel],
   })
 
   const queueStats = useMemo(() => {

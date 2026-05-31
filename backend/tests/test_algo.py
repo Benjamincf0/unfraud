@@ -213,3 +213,17 @@ def test_pipeline_hybrid_predict():
         assert "alert_reason" in scored.columns
         assert "flagged_by_rules" in scored.columns
         assert scored["fraud_score"].between(0, 1).all()
+
+
+def test_pipeline_save_and_load():
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "train.csv")
+        model_path = os.path.join(tmp, "fraud_model.pkl")
+        _sample_labeled_df().to_csv(csv_path, index=False)
+        pipeline = FraudDetectionPipeline(model_threshold=0.3)
+        pipeline.fit(csv_path, train_frac=0.7)
+        pipeline.save(model_path)
+        loaded = FraudDetectionPipeline.load(model_path)
+        assert loaded.threshold == pipeline.threshold
+        scores = loaded.model_scores(pipeline._last_X_te)
+        assert len(scores) == len(pipeline._last_X_te)

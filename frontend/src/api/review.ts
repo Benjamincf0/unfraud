@@ -10,6 +10,7 @@ export type ReviewDataResult = {
   fileHash: string
   items: TransactionFlag[]
   source: 'cache' | 'upload'
+  useModel: boolean
 }
 
 type BackendUploadResponse = {
@@ -82,8 +83,33 @@ type BackendReviewLogEntry = {
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
+type ScoringStatusResponse = {
+  heuristic: boolean
+  ml_model_available: boolean
+}
+
+function withUseModel(url: string, useModel: boolean) {
+  if (!useModel) {
+    return url
+  }
+
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}use_model=true`
+}
+
+export async function fetchScoringStatus(): Promise<ScoringStatusResponse> {
+  const response = await fetch(`${apiBaseUrl}/scoring/status`)
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Scoring status failed'))
+  }
+
+  return (await response.json()) as ScoringStatusResponse
+}
+
 export async function uploadTransactionsCsv(
   file: File,
+  useModel = false,
 ): Promise<ReviewDataResult> {
   const csvTransactions = parseTransactionsCsv(await file.text())
   const formData = new FormData()
@@ -105,7 +131,10 @@ export async function uploadTransactionsCsv(
   }
 
   const analysisResponse = await fetch(
-    `${apiBaseUrl}/analysis/all/${uploadPayload.file_hash}`,
+    withUseModel(
+      `${apiBaseUrl}/analysis/all/${uploadPayload.file_hash}`,
+      useModel,
+    ),
   )
 
   if (!analysisResponse.ok) {
@@ -120,13 +149,17 @@ export async function uploadTransactionsCsv(
     fileHash: uploadPayload.file_hash,
     items: mergeTransactionsWithAnalysis(csvTransactions, analysis),
     source: 'upload',
+    useModel,
   }
 }
 
 export async function fetchReviewDataByHash(
   fileHash: string,
+  useModel = false,
 ): Promise<ReviewDataResult> {
-  const exportResponse = await fetch(`${apiBaseUrl}/export/${fileHash}`)
+  const exportResponse = await fetch(
+    withUseModel(`${apiBaseUrl}/export/${fileHash}`, useModel),
+  )
 
   if (!exportResponse.ok) {
     throw new Error(await getErrorMessage(exportResponse, 'Cached result failed'))
@@ -138,6 +171,7 @@ export async function fetchReviewDataByHash(
     fileHash,
     items: mapAnalyzedTransactions(parseAnalyzedTransactionsCsv(csv)),
     source: 'cache',
+    useModel,
   }
 }
 
@@ -196,12 +230,17 @@ export async function fetchReviewLog(
 export async function fetchCardAnalysis({
   cardId,
   fileHash,
+  useModel = false,
 }: {
   cardId: string
   fileHash: string
+  useModel?: boolean
 }): Promise<CardAnalysis> {
   const response = await fetch(
-    `${apiBaseUrl}/analysis/user/${fileHash}/${encodeURIComponent(cardId)}`,
+    withUseModel(
+      `${apiBaseUrl}/analysis/user/${fileHash}/${encodeURIComponent(cardId)}`,
+      useModel,
+    ),
   )
 
   if (!response.ok) {

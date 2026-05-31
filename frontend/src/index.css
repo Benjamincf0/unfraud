@@ -101,6 +101,19 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.upload-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.upload-option input {
+  margin-top: 2px;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

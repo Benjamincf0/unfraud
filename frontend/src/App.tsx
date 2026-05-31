@@ -4,6 +4,7 @@ import { ReviewQueue } from './components/ReviewQueue'
 import { UploadCsv } from './components/UploadCsv'
 import {
   fetchReviewDataByHash,
+  fetchScoringStatus,
   uploadTransactionsCsv,
   type ReviewDataResult,
 } from './api/review'
@@ -21,22 +22,31 @@ function App() {
     loadActiveReviewSession,
   )
   const [isUploadMode, setIsUploadMode] = useState(() => !activeFileHash)
+  const scoringStatusQuery = useQuery({
+    enabled: isUploadMode,
+    queryFn: fetchScoringStatus,
+    queryKey: ['scoring-status'],
+  })
+  const activeSession = sessions.find((session) => session.fileHash === activeFileHash)
+  const activeUseModel = activeSession?.useModel ?? reviewData?.useModel ?? false
   const cachedResultQuery = useQuery({
     enabled:
       !isUploadMode &&
       Boolean(activeFileHash) &&
       reviewData?.fileHash !== activeFileHash,
-    queryFn: () => fetchReviewDataByHash(activeFileHash ?? ''),
-    queryKey: ['review-data', activeFileHash],
+    queryFn: () => fetchReviewDataByHash(activeFileHash ?? '', activeUseModel),
+    queryKey: ['review-data', activeFileHash, activeUseModel],
   })
   const uploadMutation = useMutation({
-    mutationFn: uploadTransactionsCsv,
-    onSuccess: (data, file) => {
+    mutationFn: ({ file, useModel }: { file: File; useModel: boolean }) =>
+      uploadTransactionsCsv(file, useModel),
+    onSuccess: (data, variables) => {
       setSessions(
         saveReviewSession({
           fileHash: data.fileHash,
-          label: file.name,
+          label: variables.file.name,
           uploadedAt: new Date().toISOString(),
+          useModel: data.useModel,
         }),
       )
       setActiveFileHash(data.fileHash)
@@ -49,8 +59,8 @@ function App() {
       ? reviewData
       : cachedResultQuery.data ?? null
 
-  const uploadCsv = (file: File) => {
-    uploadMutation.mutate(file)
+  const uploadCsv = (file: File, useModel: boolean) => {
+    uploadMutation.mutate({ file, useModel })
   }
 
   const selectSession = useCallback((fileHash: string) => {
@@ -83,6 +93,7 @@ function App() {
             : null
         }
         isUploading={uploadMutation.isPending || cachedResultQuery.isFetching}
+        mlModelAvailable={scoringStatusQuery.data?.ml_model_available ?? false}
         onUpload={uploadCsv}
       />
     )
@@ -96,6 +107,7 @@ function App() {
       onReset={showUploadScreen}
       onSelectSession={selectSession}
       sessions={sessions}
+      useModel={activeReviewData.useModel}
     />
   )
 }

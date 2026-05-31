@@ -13,6 +13,14 @@ def test_root_endpoint():
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
+
+def test_scoring_status_endpoint():
+    response = client.get("/scoring/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["heuristic"] is True
+    assert "ml_model_available" in payload
+
 def test_file_upload_and_analysis():
     """Test complete upload -> analysis workflow"""
     csv_data = """transaction_id,timestamp,card_id,amount,merchant_name,merchant_category,channel,cardholder_country,merchant_country,device_id,ip_address

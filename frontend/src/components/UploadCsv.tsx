@@ -5,16 +5,23 @@ import { Card, CardContent, CardHeader } from './ui/card'
 type UploadCsvProps = {
   error: string | null
   isUploading: boolean
-  onUpload: (file: File) => void
+  mlModelAvailable: boolean
+  onUpload: (file: File, useModel: boolean) => void
 }
 
-export function UploadCsv({ error, isUploading, onUpload }: UploadCsvProps) {
+export function UploadCsv({
+  error,
+  isUploading,
+  mlModelAvailable,
+  onUpload,
+}: UploadCsvProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [useModel, setUseModel] = useState(false)
 
   const submitUpload = () => {
     if (selectedFile) {
-      onUpload(selectedFile)
+      onUpload(selectedFile, useModel)
     }
   }
 
@@ -57,6 +64,19 @@ export function UploadCsv({ error, isUploading, onUpload }: UploadCsvProps) {
               {error}
             </div>
           ) : null}
+
+          <label className="upload-option">
+            <input
+              checked={useModel}
+              disabled={isUploading || !mlModelAvailable}
+              onChange={(event) => setUseModel(event.target.checked)}
+              type="checkbox"
+            />
+            <span>
+              Use trained ML model
+              {!mlModelAvailable ? ' (not available — train the backend model first)' : ''}
+            </span>
+          </label>
 
           <div className="upload-actions">
             <Button

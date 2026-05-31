@@ -10,6 +10,7 @@ Explainability & ops:
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -311,11 +312,30 @@ NUMERIC = [
 
 FEATURES = NUMERIC + CATEGORICAL
 
+INFERENCE_OPTIONAL_COLUMNS = ("user_age", "distance_to_merchant", "city_pop")
 
-def prepare_matrix(g):
+
+def ensure_inference_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill training-only columns missing from challenge / production CSVs."""
+    out = df.copy()
+    for col in INFERENCE_OPTIONAL_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+    return out
+
+
+def prepare_features(g: pd.DataFrame) -> pd.DataFrame:
+    """Feature matrix for inference (no labels)."""
     X = g[FEATURES].copy()
+    for name in NUMERIC:
+        X[name] = pd.to_numeric(X[name], errors="coerce")
     for c in CATEGORICAL:
         X[c] = X[c].astype("category")
+    return X
+
+
+def prepare_matrix(g):
+    X = prepare_features(g)
     y = g["is_fraud"].astype(int)
     return X, y
 
@@ -1016,6 +1036,7 @@ def explain_alerts(
 # ---------------------------------------------------------------------------
 OPS_DIR = Path(__file__).resolve().parent / "ops"
 DEFAULT_METRICS_PATH = OPS_DIR / "drift_metrics.json"
+DEFAULT_MODEL_PATH = OPS_DIR / "fraud_model.pkl"
 
 
 def _iso_week(ts: Optional[datetime] = None) -> str:
@@ -1314,6 +1335,36 @@ class FraudDetectionPipeline:
         self.monitor.mark_retrained(pr_auc)
         self.monitor.record_weekly(pr_auc, len(self._last_y_te))
         return self
+
+    def save(self, path: Path | str = DEFAULT_MODEL_PATH) -> Path:
+        if self.model is None:
+            raise RuntimeError("Pipeline not fitted — nothing to save")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        artifact = {
+            "model": self.model,
+            "threshold": float(self.threshold),
+            "features": list(FEATURES),
+            "version": 1,
+        }
+        with target.open("wb") as handle:
+            pickle.dump(artifact, handle)
+        return target
+
+    @classmethod
+    def load(cls, path: Path | str = DEFAULT_MODEL_PATH) -> "FraudDetectionPipeline":
+        target = Path(path)
+        if not target.exists():
+            raise FileNotFoundError(f"No model artifact at {target}")
+        with target.open("rb") as handle:
+            artifact = pickle.load(handle)
+        pipeline = cls(model_threshold=float(artifact["threshold"]))
+        pipeline.model = artifact["model"]
+        pipeline.threshold = float(artifact["threshold"])
+        pipeline._threshold_from_curve = False
+        pipeline._threshold_tuned_on_val = True
+        pipeline.explainer = None
+        return pipeline
 
 
 # ---------------------------------------------------------------------------

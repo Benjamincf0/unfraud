@@ -2,6 +2,7 @@ export type ReviewSession = {
   fileHash: string
   label: string
   uploadedAt: string
+  useModel?: boolean
 }
 
 const storageKey = 'fraud-hunter-review-sessions'

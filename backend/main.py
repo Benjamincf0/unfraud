@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from fraud_scorer import simple_fraud_detection
+from ml_fraud_scorer import ModelNotAvailableError, is_model_available, ml_fraud_detection
 
 app = FastAPI()
 
@@ -74,6 +75,34 @@ class ReviewLogEntry(BaseModel):
 def read_root():
     return {"status": "ok"}
 
+
+@app.get("/scoring/status")
+def scoring_status():
+    return {
+        "heuristic": True,
+        "ml_model_available": is_model_available(),
+    }
+
+
+def _analysis_cache_key(file_hash: str, use_model: bool) -> str:
+    return f"{file_hash}:{'ml' if use_model else 'heuristic'}"
+
+
+def _clear_analysis_cache(file_hash: str) -> None:
+    prefix = f"{file_hash}:"
+    for key in list(analysis_cache):
+        if key.startswith(prefix):
+            analysis_cache.pop(key, None)
+
+
+def _score_transactions(df: pd.DataFrame, use_model: bool) -> pd.DataFrame:
+    if use_model:
+        try:
+            return ml_fraud_detection(df)
+        except ModelNotAvailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return simple_fraud_detection(df)
+
 @app.post("/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
     # Read file content
@@ -112,7 +141,7 @@ async def upload_file(file: UploadFile = File(...)):
 
         # Store DataFrame
         uploaded_files[file_hash] = df
-        analysis_cache.pop(file_hash, None)
+        _clear_analysis_cache(file_hash)
         review_log[file_hash] = {}
         
         return UploadResponse(
@@ -125,15 +154,19 @@ async def upload_file(file: UploadFile = File(...)):
             detail=f"Error processing CSV: {str(e)}"
         )
 
-def _get_or_compute_analysis(file_hash: str) -> pd.DataFrame:
+def _get_or_compute_analysis(file_hash: str, use_model: bool = False) -> pd.DataFrame:
     if file_hash not in uploaded_files:
         raise HTTPException(status_code=404, detail="File not found")
-    if file_hash not in analysis_cache:
+    cache_key = _analysis_cache_key(file_hash, use_model)
+    if cache_key not in analysis_cache:
         try:
-            analysis_cache[file_hash] = simple_fraud_detection(uploaded_files[file_hash])
+            analysis_cache[cache_key] = _score_transactions(
+                uploaded_files[file_hash],
+                use_model=use_model,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return analysis_cache[file_hash]
+    return analysis_cache[cache_key]
 
 
 def _review_records_for_export(file_hash: str) -> pd.DataFrame:
@@ -161,8 +194,8 @@ def _review_records_for_export(file_hash: str) -> pd.DataFrame:
     )
 
 
-def _analysis_with_review_columns(file_hash: str) -> pd.DataFrame:
-    analyzed_df = _get_or_compute_analysis(file_hash).copy()
+def _analysis_with_review_columns(file_hash: str, use_model: bool = False) -> pd.DataFrame:
+    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model).copy()
     review_df = _review_records_for_export(file_hash)
 
     if review_df.empty:
@@ -207,8 +240,8 @@ def _to_fraud_analysis(row: pd.Series) -> FraudAnalysis:
     )
 
 @app.get("/analysis/all/{file_hash}")
-async def get_all_analysis(file_hash: str):
-    analyzed_df = _get_or_compute_analysis(file_hash)
+async def get_all_analysis(file_hash: str, use_model: bool = False):
+    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
     return [_to_fraud_analysis(row) for _, row in analyzed_df.iterrows()]
 
 def row_to_analyzed_transaction(row: Any) -> AnalyzedTransaction:
@@ -235,8 +268,8 @@ def row_to_analyzed_transaction(row: Any) -> AnalyzedTransaction:
     )
 
 @app.get("/analysis/user/{file_hash}/{card_id}", response_model=List[AnalyzedTransaction])
-async def get_user_analysis(file_hash: str, card_id: str):
-    analyzed_df = _get_or_compute_analysis(file_hash)
+async def get_user_analysis(file_hash: str, card_id: str, use_model: bool = False):
+    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
     user_df = analyzed_df[analyzed_df["card_id"] == card_id]
     if user_df.empty:
         raise HTTPException(status_code=404, detail="No transactions found for this card")
@@ -246,8 +279,8 @@ async def get_user_analysis(file_hash: str, card_id: str):
     ]
 
 @app.get("/analysis/ip/{file_hash}/{ip_address}")
-async def get_ip_analysis(file_hash: str, ip_address: str):
-    analyzed_df = _get_or_compute_analysis(file_hash)
+async def get_ip_analysis(file_hash: str, ip_address: str, use_model: bool = False):
+    analyzed_df = _get_or_compute_analysis(file_hash, use_model=use_model)
     ip_df = analyzed_df[analyzed_df["ip_address"] == ip_address]
     if ip_df.empty:
         raise HTTPException(status_code=404, detail="No transactions found for this IP")
@@ -331,8 +364,8 @@ async def get_review_log(file_hash: str):
     return entries
 
 @app.get("/export/{file_hash}")
-async def export_analysis(file_hash: str):
-    analyzed_df = _analysis_with_review_columns(file_hash)
+async def export_analysis(file_hash: str, use_model: bool = False):
+    analyzed_df = _analysis_with_review_columns(file_hash, use_model=use_model)
     
     # Create CSV in memory
     output = io.StringIO()
