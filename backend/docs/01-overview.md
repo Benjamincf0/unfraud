@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Fraud Hunter helps a **human reviewer** work through suspicious card transactions efficiently. The backend does not replace the reviewer; it **prioritizes** which transactions deserve attention and **explains** why each one looks risky.
+Unfraudify helps a **human reviewer** work through suspicious card transactions efficiently. The backend does not replace the reviewer; it **prioritizes** which transactions deserve attention and **explains** why each one looks risky.
 
 Think of it as a triage nurse: it does not diagnose every case, but it sorts patients so the doctor sees the urgent ones first and has notes on symptoms.
 
@@ -32,12 +32,9 @@ Located in `fraud_scorer.py`. It compares each transaction to **that card’s pa
 - Default flag threshold: **0.55** (tuned for ~1% fraud rate so the queue stays manageable).
 - Designed to be **conservative**: fewer false alarms in the review queue matter more than catching every edge case when labels are unknown.
 
-### ML engine (LightGBM + rules)
+### ML / hybrid engine (LightGBM + rules + strong heuristic)
 
-Located in `ml_fraud_scorer.py` and `algo/algo.py`. A **gradient boosted tree** model learns patterns from historical data where `is_fraud` is known (training CSV). Six **guardrail rules** always run in parallel so obvious fraud patterns are not missed if the model is uncertain.
-
-- Combined score = model probability + a boost when any guardrail fires (capped at 1.0).
-- A transaction is flagged if **either** the model exceeds its threshold **or** any guardrail triggers.
+Located in `hybrid_scorer.py`, `ml_fraud_scorer.py`, and `algo/algo.py`. When `use_model=true`, the API runs ML scoring, attaches heuristic scores, and applies the hybrid queue rule (same as `make export`): flag if ML model ≥ threshold, ML alert rule fires, **or** heuristic score ≥ 0.55.
 
 ## What the backend does *not* do (today)
 
@@ -94,10 +91,10 @@ Typical API sequence from the UI:
 |------|-----------|------|
 | HTTP API | `main.py` | Upload, analysis, review, export |
 | Heuristic scoring | `fraud_scorer.py` | Default production scorer for challenge |
-| ML scoring | `ml_fraud_scorer.py` | Loads trained pipeline, adapts output for API |
+| ML / hybrid scoring | `hybrid_scorer.py`, `ml_fraud_scorer.py` | Hybrid queue when `use_model=true` |
 | ML training & features | `algo/algo.py` | Features, training, rules, SHAP, drift |
 | Train script | `scripts/train_fraud_model.py` | Writes `fraud_model.pkl` |
 | Hyperparameter search | `algo/tune_lgbm.py` | Optional Optuna tuning (offline) |
-| Challenge export | `export_challenge_csv.py` | Offline CSV using heuristic scorer |
+| Challenge export | `export_challenge_csv.py` | Offline hybrid CSV (`make export`) |
 
 For the next level of detail, continue with [02-data-and-workflow.md](02-data-and-workflow.md).

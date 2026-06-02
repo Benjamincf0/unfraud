@@ -1,6 +1,6 @@
 # Backend documentation
 
-This folder explains the **Fraud Hunter** backend in plain language. You do not need a programming or machine-learning background to follow it.
+This folder explains the **Unfraudify** backend in plain language. You do not need a programming or machine-learning background to follow it.
 
 **Project-wide docs (recommended first):**
 

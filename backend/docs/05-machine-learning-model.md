@@ -229,3 +229,13 @@ This is aimed at production ops, not the challenge demo API.
 | Challenge / demo default | Higher recall potential with proper validation |
 
 Training steps: [06-training-and-tuning.md](06-training-and-tuning.md).
+
+## Offline exports vs live API export
+
+| Path | Output | Flag logic |
+|------|--------|------------|
+| `make export` | `analyzed_transactions.csv` | Hybrid: ML alert (`flagged_by_model \| flagged_by_rules`) **or** heuristic `fraud_score ≥ 0.55` |
+| `make export-ml` | `ml_analyzed_transactions.csv` | ML hybrid only (this document) |
+| UI / `GET /export/{hash}?use_model=true` | Session CSV | Hybrid (same as `make export`) |
+
+The committed challenge file uses the hybrid path in `export_challenge_csv.py`, not the pure ML rules above.

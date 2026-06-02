@@ -9,12 +9,12 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from algo.algo import DEFAULT_MODEL_PATH
 from fraud_scorer import simple_fraud_detection
+from hybrid_scorer import build_hybrid_scored_transactions, hybrid_summary_stats
 from ml_fraud_scorer import (
-    DEFAULT_MODEL_PATH,
     ModelNotAvailableError,
     is_model_available,
-    ml_fraud_detection,
 )
 
 app = FastAPI()
@@ -251,6 +251,7 @@ class AnalysisSummaryResponse(BaseModel):
     alert_only_count: int = 0
     model_alert_both_count: int = 0
     soft_rule_only_count: int = 0
+    heuristic_boost_count: int = 0
 
 
 class QueueTransactionItem(TransactionBase):
@@ -340,7 +341,7 @@ def _score_transactions(
 ) -> pd.DataFrame:
     if use_model:
         try:
-            return ml_fraud_detection(df)
+            return build_hybrid_scored_transactions(df)
         except ModelNotAvailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     return simple_fraud_detection(df, weight_multipliers=weight_multipliers)
@@ -823,7 +824,7 @@ async def get_analysis_summary(file_hash: str):
         model_df = _analysis_with_review_columns(file_hash, use_model=True)
         model_flagged_count = int(model_df["is_fraud"].sum())
         model_threshold = float(get_pipeline().threshold)
-        ml_stats = _ml_summary_stats(model_df)
+        ml_stats = hybrid_summary_stats(model_df)
 
     model_flagged_queue_stats = (
         _flagged_queue_stats(file_hash, use_model=True)

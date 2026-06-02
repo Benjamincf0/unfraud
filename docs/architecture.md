@@ -1,10 +1,10 @@
-# Architecture — how Fraud Hunter works
+# Architecture — how Unfraudify works
 
 This document explains how the **React frontend** and **FastAPI backend** fit together. It is written for new contributors and technical readers who want the big picture before diving into code.
 
 ## System overview
 
-Fraud Hunter is a **client–server** app:
+Unfraudify is a **client–server** app:
 
 ```mermaid
 flowchart TB
@@ -135,6 +135,7 @@ Audit:
 
 - **Endpoint:** `GET /export/{file_hash}?use_model=false|true`
 - Streams a CSV merging original columns, fraud fields, and review columns
+- Uses the **active scorer**: heuristic when `use_model=false`, **hybrid** (same as `make export`) when `use_model=true`
 
 ## Two scoring engines
 
@@ -145,7 +146,7 @@ Both engines share the same API surface. The frontend selects via `use_model` qu
 | Code | `fraud_scorer.py` | `ml_fraud_scorer.py` + `algo/algo.py` |
 | Model file | None | `algo/ops/fraud_model.pkl` |
 | Approach | Weighted rules, per-card baselines, cross-card signals | LightGBM + six guardrail rules |
-| Used by | Challenge export (`make export`), default UI | UI toggle when artifact present |
+| Used by | Default UI and API when `use_model=false` | Hybrid UI/API when `use_model=true`; same rule as `make export` |
 
 See [Heuristic scoring](../backend/docs/04-heuristic-scoring.md) and [ML model](../backend/docs/05-machine-learning-model.md) for algorithm detail.
 
@@ -188,7 +189,7 @@ See [Heuristic scoring](../backend/docs/04-heuristic-scoring.md) and [ML model](
 | `ml_fraud_scorer.py` | ML pipeline loader and API adapter |
 | `algo/algo.py` | Feature engineering, training, SHAP, guardrails |
 | `scripts/train_fraud_model.py` | Train and write `fraud_model.pkl` |
-| `export_challenge_csv.py` | Offline heuristic export |
+| `export_challenge_csv.py` | Offline hybrid export (`make export`) |
 
 ## Development and deployment notes
 

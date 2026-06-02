@@ -141,10 +141,18 @@ For production, you would typically persist uploads and decisions in a database;
 
 ## Offline batch export (no server)
 
-The repository can generate `analyzed_transactions.csv` at the repo root without running the API:
+These commands do not require the API server. They differ from the live UI export, which uses a **single** scorer based on the `use_model` toggle.
+
+| Command | Output | Logic |
+|---------|--------|-------|
+| `make export` | `analyzed_transactions.csv` | Runs **both** scorers, then flags a row if an ML alert signal fires **or** heuristic `fraud_score ≥ 0.55`. Adds columns such as `heuristic_fraud_score`, `hybrid_decision_reason`, and `model_threshold`. |
+| `make export-ml` | `ml_analyzed_transactions.csv` | **ML hybrid only** (model ≥ threshold or `rule_alert`). Requires `algo/ops/fraud_model.pkl`. |
+| `make score-ml` | *(stdout only)* | Same ML scoring as `export-ml`, prints flag counts and breakdown. |
 
 ```bash
 make export
 ```
 
-That script reads `transactions.csv`, runs the **heuristic** scorer only, and writes empty review columns. It is the committed challenge output format.
+That script reads `transactions.csv`, merges heuristic and ML outputs via `export_challenge_csv.py`, and writes empty review columns. It is the committed challenge output format.
+
+Live session export: `GET /export/{file_hash}?use_model=false|true` — heuristic-only when `false`, **hybrid** (same as `make export`) when `true`, plus any review decisions recorded in that session.

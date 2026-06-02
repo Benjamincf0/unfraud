@@ -1,6 +1,6 @@
 # Fraud Detection Backend
 
-FastAPI service for Fraud Hunter: upload transaction CSVs, score fraud risk, support human review, and export enriched results.
+FastAPI service for Unfraudify: upload transaction CSVs, score fraud risk, support human review, and export enriched results.
 
 ## Documentation (start here)
 
@@ -93,7 +93,7 @@ From repo root:
 make export
 ```
 
-Uses the **heuristic** scorer on `transactions.csv`.
+Runs **both** scorers on `transactions.csv` and writes a **hybrid** `analyzed_transactions.csv` at the repo root (ML alert signal **or** strong heuristic score ≥ 0.55). See [docs/02-data-and-workflow.md](docs/02-data-and-workflow.md).
 
 ## Score challenge CSV with ML
 

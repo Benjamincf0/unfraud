@@ -4,8 +4,8 @@ export type ReviewSession = {
   uploadedAt: string
 }
 
-const storageKey = 'fraud-hunter-review-sessions'
-const activeStorageKey = 'fraud-hunter-active-review-session'
+const storageKey = 'unfraudify-review-sessions'
+const activeStorageKey = 'unfraudify-active-review-session'
 
 export function loadReviewSessions(): ReviewSession[] {
   try {

@@ -1,10 +1,10 @@
-# Getting started — using Fraud Hunter
+# Getting started — using Unfraudify
 
 This guide is for **reviewers and new users**. No programming knowledge required.
 
 ## What you need
 
-- The Fraud Hunter app running locally (see [Run the app](#run-the-app) below).
+- The Unfraudify app running locally (see [Run the app](#run-the-app) below).
 - A transaction CSV file. The challenge provides `transactions.csv` with 1,000 payments.
 
 ## Run the app
@@ -92,9 +92,9 @@ These adjust **which flagged items appear in your working queue** in the UI. The
 
 ### Heuristic vs model scoring
 
-By default the app uses the **heuristic** scorer (hand-crafted rules). If a trained ML model is installed on the backend, switch to **Model** scoring with the toggle in the queue toolbar.
+By default the app uses the **heuristic** scorer (hand-crafted rules). If a trained ML model is installed on the backend, switch to **Hybrid** scoring with the toggle in the queue toolbar.
 
-In model mode you get:
+In hybrid mode you get the same queue as `analyzed_transactions.csv`: ML alert signals **or** a strong heuristic score (≥ 0.55). You also get:
 
 - A **status breakdown** in the header: how many queued rows came from the model threshold alone, from a strict **alert rule** alone, from both, or were only **elevated** by a soft rule (higher score but not auto-queued)
 - **Queue cause tabs** (when the review queue is active): **All queued**, **Model only**, **Alert rule only**, and **Model + alert** — slice the queue by what triggered each flag
@@ -122,8 +122,9 @@ The app remembers **upload session names** in your browser (file name and upload
 
 To download a CSV with scores, explanations, and your review decisions:
 
-- Use the backend export endpoint directly: `GET /export/{file_hash}` (developers can open `http://127.0.0.1:8000/docs` for interactive API docs).
-- Or from the repo root, run `make export` to regenerate the committed challenge output file using the heuristic scorer.
+- **In the app:** click **Export CSV** in the queue toolbar. With the **Hybrid** toggle on, the file matches `analyzed_transactions.csv` (ML alert **or** strong heuristic ≥ 0.55). With **Heuristic** on, you get rules-only scoring. Review decisions from the current session are included.
+- **Developers:** `GET /export/{file_hash}?use_model=false|true` — same behavior as the UI toggle.
+- **Offline (no server):** `make export` regenerates the committed `analyzed_transactions.csv` using the same hybrid rule as the app's Hybrid mode.
 
 Exported files include original transaction columns plus fraud scores, reason text, JSON explainability fields, and review metadata.
 

@@ -35,7 +35,7 @@ Dependencies are managed with **uv** (`pyproject.toml`, `uv.lock`). Python 3.14+
 | `algo/ops/best_lgbm_params.json` | Optional tuned hyperparameters |
 | `scripts/train_fraud_model.py` | CLI to train and save model |
 | `scripts/score_transactions.py` | Offline ML scoring + flag summary for challenge CSV |
-| `export_challenge_csv.py` | Offline heuristic export for challenge |
+| `export_challenge_csv.py` | Offline hybrid export (`make export` → `analyzed_transactions.csv`) |
 | `tests/` | Automated tests (API, scorers, algo) |
 
 ## Project layout (frontend)

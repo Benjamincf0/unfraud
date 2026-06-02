@@ -55,6 +55,9 @@ export function queueCauseLabel(transaction: TransactionFlag): string | null {
   if (ml.flaggedByAlert) {
     return 'Alert rule'
   }
+  if (!ml.flaggedByModel && !ml.flaggedByAlert) {
+    return 'Strong heuristic score'
+  }
   return 'In review queue'
 }
 

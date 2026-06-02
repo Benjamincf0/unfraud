@@ -1,6 +1,6 @@
-# Fraud Hunter
+# Unfraudify
 
-Fraud Hunter is a **reviewer-first fraud triage app** built for the MCP Hacks challenge. It ingests a CSV of card transactions, scores every row for fraud risk, explains each alert in plain language, and gives a human reviewer a keyboard-driven queue to approve, dismiss, or escalate decisions.
+Unfraudify is a **reviewer-first fraud triage app** built for the MCP Hacks challenge. It ingests a CSV of card transactions, scores every row for fraud risk, explains each alert in plain language, and gives a human reviewer a keyboard-driven queue to approve, dismiss, or escalate decisions.
 
 **New here?** Start with the [documentation hub](docs/README.md) — it includes a non-technical [getting started guide](docs/getting-started.md) and an [architecture overview](docs/architecture.md) of how the frontend and backend work together.
 
@@ -34,11 +34,21 @@ Runs the backend pytest suite and builds the frontend.
 
 ## Export the flagged CSV
 
+Three offline export paths (see [backend/docs/02-data-and-workflow.md](backend/docs/02-data-and-workflow.md) for detail):
+
+| Command | Output file | What runs |
+|---------|-------------|-----------|
+| `make export` | `analyzed_transactions.csv` | **Hybrid:** ML alert signals **or** strong heuristic score (≥ 0.55) |
+| `make export-ml` | `ml_analyzed_transactions.csv` | **ML only** (LightGBM + guardrail rules) |
+
 ```bash
-make export
+make export      # committed challenge file (hybrid)
+make export-ml   # pure ML export (requires trained model)
 ```
 
-The committed `analyzed_transactions.csv` is the current heuristic detector output for the challenge dataset.
+The committed `analyzed_transactions.csv` is produced by `make export`. It merges both scorers and applies a tighter queue rule than either engine alone.
+
+The **live UI** export button uses whichever scorer is active: heuristic-only, or **hybrid** (ML alert signals **or** strong heuristic ≥ 0.55) when the Hybrid toggle is on — matching `make export` / `analyzed_transactions.csv`.
 
 ## Score with the trained ML model
 
@@ -48,13 +58,7 @@ After training (`cd backend && uv run python -m scripts.train_fraud_model`):
 make score-ml
 ```
 
-Prints how many of the 1,000 challenge rows the hybrid LightGBM + guardrail detector flags. To also write an enriched CSV:
-
-```bash
-make export-ml
-```
-
-Creates `ml_analyzed_transactions.csv` at the repo root. It preserves the original transaction fields and adds fraud scores, reasons, explainability JSON, card/cross-card feature columns, and review handoff columns.
+Prints how many of the 1,000 challenge rows the hybrid LightGBM + guardrail detector flags.
 
 ## Documentation
 

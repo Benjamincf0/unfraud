@@ -193,7 +193,7 @@ The frontend maps these to queue-cause filters: model-only, alert-only, or both.
 
 **Purpose:** Download one CSV with transactions, fraud columns, and review columns.
 
-**Query:** `use_model` as above.
+**Query:** `use_model` as above — when `true`, exports the **hybrid** queue (ML alert **or** strong heuristic ≥ 0.55), matching `make export` / `analyzed_transactions.csv`. When `false`, heuristic-only.
 
 **Response:** File download (`analyzed_transactions_<hash-prefix>.csv`).
 

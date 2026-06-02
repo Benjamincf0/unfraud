@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { CardAnalysisPanel } from './CardAnalysisPanel'
 import { CrossCardNetworkPanel } from './CrossCardNetworkPanel'
 import { ScoringBreakdown } from './ScoringBreakdown'
@@ -36,11 +37,15 @@ type TransactionDetailProps = {
     transactionIds: string[]
   }) => void
   onSelectTransaction: (transactionId: string) => void
+  heuristicTransaction: TransactionFlag
+  isModelScoringLoading?: boolean
+  mlModelAvailable: boolean
   modelThreshold: number | null
+  modelTransaction: TransactionFlag | null
   reviewableTransactionIds: Set<string>
   transactions: TransactionFlag[]
   transaction: TransactionFlag
-  useModel: boolean
+  queueUseModel: boolean
 }
 
 export function TransactionDetail({
@@ -56,12 +61,26 @@ export function TransactionDetail({
   onFilterByField,
   onFocusRelatedTransactions,
   onSelectTransaction,
+  heuristicTransaction,
+  isModelScoringLoading = false,
+  mlModelAvailable,
   modelThreshold,
+  modelTransaction,
   reviewableTransactionIds,
   transactions,
   transaction,
-  useModel,
+  queueUseModel,
 }: TransactionDetailProps) {
+  const [detailUseModel, setDetailUseModel] = useState(queueUseModel)
+
+  useEffect(() => {
+    setDetailUseModel(queueUseModel)
+  }, [transaction.transactionId])
+
+  const showModelScoring = detailUseModel && Boolean(modelTransaction)
+  const scoringTransaction =
+    showModelScoring && modelTransaction ? modelTransaction : heuristicTransaction
+
   const toggleReasonCode = (reasonCode: string) => {
     const selected = decisionFeedback.reasonCodes.includes(reasonCode)
     onDecisionFeedbackChange(transaction.transactionId, {
@@ -109,7 +128,7 @@ export function TransactionDetail({
             />
           </p>
         </div>
-        <span className="risk-label">{transaction.label}</span>
+        <span className="risk-label">{scoringTransaction.label}</span>
       </CardHeader>
 
       <CardContent>
@@ -122,7 +141,7 @@ export function TransactionDetail({
               value={String(transaction.amount)}
             />
           </span>
-          <span>{Math.round(transaction.score * 100)} risk</span>
+          <span>{Math.round(scoringTransaction.score * 100)} risk</span>
         </div>
 
         <dl className="detail-grid">
@@ -203,9 +222,13 @@ export function TransactionDetail({
         </dl>
 
         <ScoringBreakdown
+          detailUseModel={detailUseModel}
+          heuristicTransaction={heuristicTransaction}
+          isModelLoading={isModelScoringLoading}
+          mlModelAvailable={mlModelAvailable}
           modelThreshold={modelThreshold}
-          transaction={transaction}
-          useModel={useModel}
+          modelTransaction={modelTransaction}
+          onDetailUseModelChange={setDetailUseModel}
         />
 
         <section
@@ -219,7 +242,7 @@ export function TransactionDetail({
             <p className="analysis-state">{reasonsLoadError}</p>
           ) : (
             <div className="reason-list">
-              {transaction.reasons.map((reason) => (
+              {scoringTransaction.reasons.map((reason) => (
                 <div className="reason-row" key={reason.id}>
                   <div>
                     <strong>
@@ -295,7 +318,7 @@ export function TransactionDetail({
             <span>Dismiss -15% · Approve +8% · Escalate +18%</span>
           </div>
           <div className="decision-signal-list">
-            {transaction.reasons.map((reason, index) => {
+            {scoringTransaction.reasons.map((reason, index) => {
               const reasonCode = getFeedbackReasonCode(reason, index)
               const selected = decisionFeedback.reasonCodes.includes(reasonCode)
 
